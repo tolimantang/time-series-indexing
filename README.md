@@ -1,0 +1,164 @@
+# Time Series Indexing for RAG
+
+A Python library for building semantic similarity indexes on time series data, enabling retrieval-augmented generation (RAG) applications for financial and temporal data analysis.
+
+## Overview
+
+This library helps you:
+- Segment time series data into meaningful windows
+- Extract features and create embeddings from time series segments
+- Build vector indexes for fast similarity search
+- Query for historically similar market conditions or temporal patterns
+
+## Installation
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd time-series-indexing
+
+# Install in development mode
+pip install -e .
+
+# Or install dependencies directly
+pip install -r requirements.txt
+```
+
+## Quick Start
+
+```python
+from tsindexing import TimeSeriesLoader, FeatureEncoder, IndexBuilder, IndexQuery
+from tsindexing.data.segmentation import TimeSeriesSegmenter
+
+# 1. Load and segment your time series data
+loader = TimeSeriesLoader()
+df = loader.load_csv("your_data.csv", date_column="date")
+
+segmenter = TimeSeriesSegmenter(window_size=64, stride=8)
+segments = segmenter.create_segments_with_features(
+    df, value_columns=["price", "volume"]
+)
+
+# 2. Create embeddings
+encoder = FeatureEncoder(use_fft=True, use_statistical=True)
+embeddings = encoder.fit_transform(segments)
+
+# 3. Build vector index
+builder = IndexBuilder(collection_name="my_timeseries")
+builder.build_from_data(segments, embeddings)
+
+# 4. Query for similar patterns
+query_interface = IndexQuery(collection_name="my_timeseries")
+similar = query_interface.find_similar_contexts(
+    current_segment=segments[-1],  # Use latest segment as query
+    encoder=encoder,
+    top_k=5
+)
+```
+
+## Core Components
+
+### Data Loading & Segmentation
+- **TimeSeriesLoader**: Load CSV data and handle datetime indexing
+- **TimeSeriesSegmenter**: Create overlapping windows with feature extraction
+
+### Embedding Generation
+- **FeatureEncoder**: Extract statistical, FFT, and technical features
+- Support for PCA dimensionality reduction and normalization
+
+### Vector Indexing
+- **IndexBuilder**: Build Qdrant vector database collections
+- **IndexQuery**: Query interface for similarity search with metadata filtering
+
+## Architecture
+
+```
+time-series-indexing/
+├── src/tsindexing/
+│   ├── data/           # Data loading and segmentation
+│   ├── embeddings/     # Feature extraction and encoding
+│   ├── index/          # Vector database operations
+│   └── llm/            # LLM integration utilities
+├── examples/           # Usage examples
+└── tests/             # Test suite
+```
+
+## Example Use Cases
+
+1. **Financial Market Analysis**: Find historical periods with similar market conditions
+2. **Anomaly Detection**: Identify unusual patterns by comparing to historical segments
+3. **Forecasting Context**: Retrieve similar past scenarios for context-aware predictions
+4. **Regime Detection**: Cluster and classify different market regimes or operational states
+
+## Features
+
+- **Multiple Embedding Strategies**: Statistical features, FFT components, technical indicators
+- **Flexible Segmentation**: Configurable window sizes and overlap strategies
+- **Metadata Filtering**: Filter searches by symbol, date range, or custom attributes
+- **Scalable Storage**: Built on Qdrant vector database for production use
+- **Easy Integration**: Simple API for embedding in larger RAG pipelines
+
+## Sample Data & Examples
+
+The project includes sample CSV files in the `data/` directory:
+
+- **`sample_yahoo_finance.csv`**: Real AAPL data in Yahoo Finance format
+- **`sample_multi_asset.csv`**: Multi-stock data (AAPL, GOOGL, MSFT)
+
+### Running Examples
+
+```bash
+# Basic synthetic data example
+python examples/basic_usage.py
+
+# Test with sample CSV files
+python examples/test_with_sample_data.py
+
+# Yahoo Finance compatibility demo
+python examples/yahoo_finance_example.py
+```
+
+### Real Data Sources
+
+The TimeSeriesLoader is compatible with:
+
+- **Yahoo Finance**: Download any stock CSV from finance.yahoo.com
+- **yfinance**: `pip install yfinance` for programmatic downloads
+- **Alpha Vantage**: Export CSV from alphavantage.co
+- **Quandl/NASDAQ**: Any standard OHLCV format
+- **Custom datasets**: Any CSV with date + numeric columns
+
+```python
+# Example with real Yahoo Finance CSV
+loader = TimeSeriesLoader()
+df = loader.load_csv("AAPL.csv", date_column="Date")
+segments = loader.create_segments(df, window_size=30, stride=5)
+```
+
+## Requirements
+
+- Python 3.9+
+- pandas, numpy, scipy, scikit-learn
+- qdrant-client for vector storage
+- pydantic for data validation
+
+## Development
+
+```bash
+# Install development dependencies
+pip install -e ".[dev]"
+
+# Run tests
+pytest
+
+# Format code
+black src/ examples/
+isort src/ examples/
+
+# Type checking
+mypy src/
+```
+
+## License
+
+MIT License - see LICENSE file for details.

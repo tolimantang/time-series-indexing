@@ -1,0 +1,17 @@
+README.md
+pyproject.toml
+src/time_series_indexing.egg-info/PKG-INFO
+src/time_series_indexing.egg-info/SOURCES.txt
+src/time_series_indexing.egg-info/dependency_links.txt
+src/time_series_indexing.egg-info/requires.txt
+src/time_series_indexing.egg-info/top_level.txt
+src/tsindexing/__init__.py
+src/tsindexing/data/__init__.py
+src/tsindexing/data/loader.py
+src/tsindexing/data/segmentation.py
+src/tsindexing/embeddings/__init__.py
+src/tsindexing/embeddings/feature_encoder.py
+src/tsindexing/index/__init__.py
+src/tsindexing/index/builder.py
+src/tsindexing/index/query.py
+src/tsindexing/llm/__init__.py
