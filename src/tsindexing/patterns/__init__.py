@@ -1,0 +1,1 @@
+"""Pattern library for financial time series analysis."""
