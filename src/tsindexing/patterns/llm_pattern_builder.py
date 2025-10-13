@@ -215,12 +215,26 @@ Output only the dates, no explanations:
             from chronos import ChronosPipeline
             import torch
 
+            # Better device/dtype selection for MacOS compatibility
+            if torch.backends.mps.is_available():
+                device_map = "mps"
+                dtype = torch.float32  # MPS doesn't support bfloat16
+                print("Using MPS (Apple Silicon) with float32")
+            elif torch.cuda.is_available():
+                device_map = "cuda"
+                dtype = torch.bfloat16
+                print("Using CUDA with bfloat16")
+            else:
+                device_map = "cpu"
+                dtype = torch.float32
+                print("Using CPU with float32")
+
             # Load Chronos model
             print("Loading Chronos model...")
             pipeline = ChronosPipeline.from_pretrained(
                 "amazon/chronos-t5-small",
-                device_map="auto",
-                torch_dtype=torch.bfloat16,
+                device_map=device_map,
+                torch_dtype=dtype,
             )
 
             embeddings = []
@@ -232,14 +246,35 @@ Output only the dates, no explanations:
                 ts_tensor = torch.tensor(close_prices, dtype=torch.float32)
 
                 with torch.no_grad():
-                    embedding = pipeline.embed(ts_tensor.unsqueeze(0))
+                    # Handle both tensor and tuple returns from embed
+                    embedding_result = pipeline.embed(ts_tensor.unsqueeze(0))
+                    if isinstance(embedding_result, tuple):
+                        embedding = embedding_result[0]  # Take first element if tuple
+                    else:
+                        embedding = embedding_result
                     embeddings.append(embedding.squeeze(0).cpu().numpy())
 
                 if (i + 1) % 5 == 0:
                     print(f"  Progress: {i + 1}/{len(segments)}")
 
-            # Average all embeddings
-            avg_embedding = np.mean(embeddings, axis=0)
+            # Debug: Check embedding shapes
+            shapes = [emb.shape for emb in embeddings]
+            print(f"  Debug: Embedding shapes: {shapes[:5]}...")  # Show first 5
+
+            # Convert to fixed-size embeddings by taking mean along sequence dimension
+            print(f"  Converting to fixed-size embeddings...")
+            fixed_embeddings = []
+            for emb in embeddings:
+                # Take mean along sequence dimension to get (512,) shape
+                fixed_emb = np.mean(emb, axis=0)  # Average across time steps
+                fixed_embeddings.append(fixed_emb)
+
+            # Verify all embeddings now have same shape
+            fixed_shapes = [emb.shape for emb in fixed_embeddings]
+            print(f"  Fixed embedding shapes: {set(fixed_shapes)}")
+
+            # Average all fixed embeddings
+            avg_embedding = np.mean(fixed_embeddings, axis=0)
             print(f"  ✅ Created average embedding with shape: {avg_embedding.shape}")
 
             return avg_embedding

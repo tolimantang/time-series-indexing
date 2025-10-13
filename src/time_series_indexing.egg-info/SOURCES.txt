@@ -11,7 +11,11 @@ src/tsindexing/data/loader.py
 src/tsindexing/data/segmentation.py
 src/tsindexing/embeddings/__init__.py
 src/tsindexing/embeddings/feature_encoder.py
+src/tsindexing/embeddings/neural_encoder.py
 src/tsindexing/index/__init__.py
 src/tsindexing/index/builder.py
 src/tsindexing/index/query.py
 src/tsindexing/llm/__init__.py
+src/tsindexing/patterns/__init__.py
+src/tsindexing/patterns/llm_pattern_builder.py
+src/tsindexing/patterns/pattern_query.py

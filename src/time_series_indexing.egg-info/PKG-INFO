@@ -121,18 +121,42 @@ time-series-indexing/
 - **Scalable Storage**: Built on Qdrant vector database for production use
 - **Easy Integration**: Simple API for embedding in larger RAG pipelines
 
-## Running the Example
+## Sample Data & Examples
+
+The project includes sample CSV files in the `data/` directory:
+
+- **`sample_yahoo_finance.csv`**: Real AAPL data in Yahoo Finance format
+- **`sample_multi_asset.csv`**: Multi-stock data (AAPL, GOOGL, MSFT)
+
+### Running Examples
 
 ```bash
-cd examples
-python basic_usage.py
+# Basic synthetic data example
+python examples/basic_usage.py
+
+# Test with sample CSV files
+python examples/test_with_sample_data.py
+
+# Yahoo Finance compatibility demo
+python examples/yahoo_finance_example.py
 ```
 
-This will:
-1. Generate synthetic time series data
-2. Create segments with feature extraction
-3. Build embeddings and vector index
-4. Demonstrate similarity search queries
+### Real Data Sources
+
+The TimeSeriesLoader is compatible with:
+
+- **Yahoo Finance**: Download any stock CSV from finance.yahoo.com
+- **yfinance**: `pip install yfinance` for programmatic downloads
+- **Alpha Vantage**: Export CSV from alphavantage.co
+- **Quandl/NASDAQ**: Any standard OHLCV format
+- **Custom datasets**: Any CSV with date + numeric columns
+
+```python
+# Example with real Yahoo Finance CSV
+loader = TimeSeriesLoader()
+df = loader.load_csv("AAPL.csv", date_column="Date")
+segments = loader.create_segments(df, window_size=30, stride=5)
+```
 
 ## Requirements
 
