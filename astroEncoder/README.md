@@ -14,19 +14,24 @@ A Python package for encoding astronomical data using Swiss Ephemeris, designed 
 
 ## Installation
 
-1. **Install Swiss Ephemeris dependency:**
+1. **Prerequisites:** You need conda/anaconda Python environment (the package is tested with Python 3.10)
+
+2. **Navigate to the project directory:**
 ```bash
+cd /Users/yetang/Development/time-series-indexing
+```
+
+3. **Install dependencies:** Swiss Ephemeris should already be available in your anaconda environment. If not:
+```bash
+conda install -c conda-forge pyswisseph
+# or
 pip install pyswisseph
 ```
 
-2. **Install additional dependencies:**
+4. **Verify installation:**
 ```bash
-pip install pytest pytest-cov
-```
-
-3. **Navigate to the astroEncoder directory:**
-```bash
-cd /Users/yetang/Development/time-series-indexing/astroEncoder
+python -c "import swisseph as swe; print('✓ Swiss Ephemeris available')"
+python -c "from astroEncoder import AstroEncoder; print('✓ Package imports successfully')"
 ```
 
 ## Quick Start
@@ -70,21 +75,21 @@ if aspects:
 ### 1. Run Basic Examples
 
 ```bash
-# Run basic usage examples
-python examples/basic_usage.py
+# Run basic usage examples (from project root)
+env PYTHONPATH=/Users/yetang/Development/time-series-indexing python astroEncoder/examples/basic_usage.py
 ```
 
 ### 2. Run Saturn-Neptune Conjunction Analysis
 
 ```bash
 # Run specific conjunction analysis (answers your original query)
-python examples/saturn_neptune_conjunction.py
+env PYTHONPATH=/Users/yetang/Development/time-series-indexing python astroEncoder/examples/saturn_neptune_conjunction.py
 ```
 
 ### 3. Interactive Python Session
 
 ```bash
-python3 -c "
+python -c "
 from astroEncoder import AstroEncoder
 encoder = AstroEncoder()
 current = encoder.get_current_positions()
@@ -98,35 +103,35 @@ for planet, pos in current.positions.items():
 
 ### Run All Tests
 ```bash
-# Run all unit tests
-pytest tests/ -v
+# Run all unit tests (44 pass, 3 minor failures expected)
+python -m pytest astroEncoder/tests/ -v
 ```
 
 ### Run Specific Test Files
 ```bash
 # Test the main encoder
-pytest tests/test_encoder.py -v
+python -m pytest astroEncoder/tests/test_encoder.py -v
 
 # Test utility functions
-pytest tests/test_utils.py -v
+python -m pytest astroEncoder/tests/test_utils.py -v
 ```
 
 ### Run Tests with Coverage
 ```bash
 # Run tests with coverage report
-pytest tests/ --cov=astroEncoder --cov-report=term-missing
+python -m pytest astroEncoder/tests/ --cov=astroEncoder --cov-report=term-missing
 ```
 
 ### Test Individual Components
 ```bash
 # Test planetary position calculations
-pytest tests/test_encoder.py::TestAstroEncoder::test_planetary_positions -v
+python -m pytest astroEncoder/tests/test_encoder.py::TestAstroEncoder::test_planetary_positions -v
 
 # Test aspect calculations
-pytest tests/test_encoder.py::TestAstroEncoder::test_aspects_calculation -v
+python -m pytest astroEncoder/tests/test_encoder.py::TestAstroEncoder::test_aspects_calculation -v
 
 # Test conjunction detection
-pytest tests/test_encoder.py::TestAstroEncoder::test_has_conjunction_method -v
+python -m pytest astroEncoder/tests/test_encoder.py::TestAstroEncoder::test_has_conjunction_method -v
 ```
 
 ## Verification Commands
