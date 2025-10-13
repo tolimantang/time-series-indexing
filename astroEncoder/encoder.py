@@ -113,8 +113,9 @@ class AstroEncoder:
         if include_houses:
             houses = self._calculate_houses(julian_day, location_data)
             # Add house information to planetary positions
-            for planet_name, position in positions.items():
-                position.house = houses.planetary_houses.get(planet_name)
+            if houses and hasattr(houses, 'planetary_houses'):
+                for planet_name, position in positions.items():
+                    position.house = houses.planetary_houses.get(planet_name)
 
         # Calculate lunar phase
         lunar_phase = calculate_lunar_phase(
