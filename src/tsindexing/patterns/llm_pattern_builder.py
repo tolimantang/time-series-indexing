@@ -216,7 +216,7 @@ Output only the dates, no explanations:
         return curated_patterns[pattern_type]
 
     def get_market_data_for_dates(self, dates: List[str], asset: str = "SPY",
-                                 window_days: int = 20) -> List[Dict]:
+                                 window_days: int = 512) -> List[Dict]:
         """Get market data segments for given dates.
 
         Args:
@@ -235,18 +235,25 @@ Output only the dates, no explanations:
             try:
                 # Convert to datetime
                 start_date = pd.to_datetime(date_str)
-                end_date = start_date + timedelta(days=window_days + 5)  # Buffer for weekends
+                end_date = start_date + timedelta(days=window_days + 200)  # Much larger buffer for 512 days
 
                 # Get data
                 ticker = yf.Ticker(asset)
                 data = ticker.history(start=start_date, end=end_date)
 
-                if len(data) < window_days // 2:  # Must have at least half the data
+                if len(data) < window_days // 4:  # Must have at least quarter the data
                     print(f"  ⚠️  {date_str}: Insufficient data ({len(data)} days)")
                     continue
 
-                # Take first window_days of data
-                segment_data = data.head(window_days)
+                # Take first window_days of data, pad if necessary
+                if len(data) >= window_days:
+                    segment_data = data.head(window_days)
+                else:
+                    # Pad with last values if insufficient data
+                    segment_data = data.copy()
+                    last_row = data.iloc[-1:].copy()
+                    for _ in range(window_days - len(data)):
+                        segment_data = pd.concat([segment_data, last_row], ignore_index=True)
 
                 segment = {
                     "timestamp_start": segment_data.index[0],
@@ -272,7 +279,7 @@ Output only the dates, no explanations:
         return segments
 
     def create_pattern_embedding(self, segments: List[Dict]) -> np.ndarray:
-        """Create average Chronos embedding from segments.
+        """Create average PatchTST embedding from segments using pre-trained model.
 
         Args:
             segments: List of market data segments
@@ -281,48 +288,91 @@ Output only the dates, no explanations:
             Average embedding vector
         """
         try:
-            # Import Chronos
-            from chronos import ChronosPipeline
+            # Import PatchTST from HuggingFace
+            from transformers import PatchTSTModel
             import torch
 
-            # Better device/dtype selection for MacOS compatibility
+            # Better device selection for MacOS compatibility
             if torch.backends.mps.is_available():
-                device_map = "mps"
+                device = "mps"
                 dtype = torch.float32  # MPS doesn't support bfloat16
                 print("Using MPS (Apple Silicon) with float32")
             elif torch.cuda.is_available():
-                device_map = "cuda"
-                dtype = torch.bfloat16
-                print("Using CUDA with bfloat16")
+                device = "cuda"
+                dtype = torch.float32
+                print("Using CUDA with float32")
             else:
-                device_map = "cpu"
+                device = "cpu"
                 dtype = torch.float32
                 print("Using CPU with float32")
 
-            # Load Chronos model
-            print("Loading Chronos model...")
-            pipeline = ChronosPipeline.from_pretrained(
-                "amazon/chronos-t5-small",
-                device_map=device_map,
-                torch_dtype=dtype,
-            )
+            print("Loading pre-trained PatchTST model...")
+            # Use IBM's pre-trained model
+            model = PatchTSTModel.from_pretrained("ibm-granite/granite-timeseries-patchtst").to(device).eval()
+            config = model.config
+
+            print(f"Model config: context_length={config.context_length}, channels={config.num_input_channels}")
 
             embeddings = []
             print(f"Creating embeddings for {len(segments)} segments...")
 
             for i, segment in enumerate(segments):
-                # Use Close price (first column)
+                # Get both Close and Volume (we need 7 channels but only have 2)
                 close_prices = segment["values"][:, 0]
-                ts_tensor = torch.tensor(close_prices, dtype=torch.float32)
+                volume = segment["values"][:, 1]
+
+                # Normalize volume to same scale as prices (rough approximation)
+                volume_normalized = volume / np.mean(volume) * np.mean(close_prices)
+
+                # Create 7 channels by repeating and transforming our data
+                # This is a hack to match the pre-trained model's expected input
+                channel_data = []
+                channel_data.append(close_prices)  # Original close
+                channel_data.append(volume_normalized)  # Normalized volume
+                channel_data.append(np.diff(close_prices, prepend=close_prices[0]))  # Price changes
+                channel_data.append(np.cumsum(close_prices - close_prices[0]))  # Cumulative changes
+                channel_data.append(np.log(close_prices / close_prices[0] + 1e-8))  # Log returns
+                channel_data.append(np.roll(close_prices, 1))  # Lagged prices
+                channel_data.append(close_prices - np.mean(close_prices))  # Mean-centered prices
+
+                # Stack into [context_length, num_channels] format
+                # Ensure we have exactly context_length points
+                target_length = config.context_length  # Use full 512 length
+
+                multi_channel_data = []
+                for channel in channel_data:
+                    if len(channel) >= target_length:
+                        # Take last target_length points
+                        channel_trimmed = channel[-target_length:]
+                    else:
+                        # Pad with last value if too short
+                        padding = [channel[-1]] * (target_length - len(channel))
+                        channel_trimmed = np.concatenate([channel, padding])
+                    multi_channel_data.append(channel_trimmed)
+
+                # Shape: [context_length, num_channels]
+                ts_array = np.array(multi_channel_data).T
+
+                # Convert to tensor: [batch_size, context_length, num_channels]
+                ts_tensor = torch.tensor(ts_array, dtype=dtype, device=device).unsqueeze(0)
+
+                # Debug tensor shape
+                if i == 0:  # Only print for first segment
+                    print(f"  Debug: ts_tensor shape: {ts_tensor.shape}")
+                    print(f"  Debug: Expected shape: [1, {target_length}, 7]")
 
                 with torch.no_grad():
-                    # Handle both tensor and tuple returns from embed
-                    embedding_result = pipeline.embed(ts_tensor.unsqueeze(0))
-                    if isinstance(embedding_result, tuple):
-                        embedding = embedding_result[0]  # Take first element if tuple
-                    else:
-                        embedding = embedding_result
-                    embeddings.append(embedding.squeeze(0).cpu().numpy())
+                    # Get model outputs (we want the hidden states for embeddings)
+                    outputs = model(ts_tensor, output_hidden_states=True)
+
+                    # Extract embedding from last hidden state
+                    # outputs.last_hidden_state shape: [batch_size, num_patches, d_model]
+                    hidden_state = outputs.last_hidden_state.squeeze(0)  # Remove batch dim
+
+                    # Pool across patches to get fixed-size embedding
+                    embedding = torch.mean(hidden_state, dim=0)  # [d_model]
+
+                    embeddings.append(embedding.cpu().numpy())
 
                 if (i + 1) % 5 == 0:
                     print(f"  Progress: {i + 1}/{len(segments)}")
@@ -331,31 +381,27 @@ Output only the dates, no explanations:
             shapes = [emb.shape for emb in embeddings]
             print(f"  Debug: Embedding shapes: {shapes[:5]}...")  # Show first 5
 
-            # Convert to fixed-size embeddings by taking mean along sequence dimension
-            print(f"  Converting to fixed-size embeddings...")
-            fixed_embeddings = []
-            for emb in embeddings:
-                # Take mean along sequence dimension to get (512,) shape
-                fixed_emb = np.mean(emb, axis=0)  # Average across time steps
-                fixed_embeddings.append(fixed_emb)
+            # Average all embeddings and ensure we get a 1D vector
+            avg_embedding = np.mean(embeddings, axis=0)
 
-            # Verify all embeddings now have same shape
-            fixed_shapes = [emb.shape for emb in fixed_embeddings]
-            print(f"  Fixed embedding shapes: {set(fixed_shapes)}")
+            # Flatten if needed to get 1D embedding
+            if avg_embedding.ndim > 1:
+                avg_embedding = avg_embedding.flatten()
 
-            # Average all fixed embeddings
-            avg_embedding = np.mean(fixed_embeddings, axis=0)
             print(f"  ✅ Created average embedding with shape: {avg_embedding.shape}")
 
             return avg_embedding
 
-        except ImportError:
-            print("❌ Chronos not installed. Install with: pip install chronos-forecasting")
+        except ImportError as e:
+            print(f"❌ PatchTST not installed: {e}")
+            print("Install with: pip install transformers")
             # Return dummy embedding for testing
-            return np.random.randn(512)
+            return np.random.randn(128)
         except Exception as e:
             print(f"❌ Error creating embeddings: {e}")
-            return np.random.randn(512)
+            import traceback
+            traceback.print_exc()
+            return np.random.randn(128)
 
     def build_pattern_library(self, asset: str = "SPY") -> Dict:
         """Build complete pattern library.
