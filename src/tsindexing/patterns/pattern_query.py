@@ -47,7 +47,25 @@ class PatternQueryInterface:
             "fear": "vix_spikes",
             "panic": "vix_spikes",
             "vol spike": "vix_spikes",
-            "market fear": "vix_spikes"
+            "market fear": "vix_spikes",
+
+            # Low volatility queries
+            "low volatility": "low_volatility",
+            "calm": "low_volatility",
+            "quiet": "low_volatility",
+            "stable": "low_volatility",
+            "low vix": "low_volatility",
+            "peaceful": "low_volatility",
+            "steady": "low_volatility",
+
+            # Bull market queries
+            "bull market": "bull_market_steady",
+            "bull": "bull_market_steady",
+            "steady climb": "bull_market_steady",
+            "gradual rise": "bull_market_steady",
+            "uptrend": "bull_market_steady",
+            "rising market": "bull_market_steady",
+            "growth": "bull_market_steady"
         }
 
     def load_patterns(self, asset: str = "SPY") -> bool:

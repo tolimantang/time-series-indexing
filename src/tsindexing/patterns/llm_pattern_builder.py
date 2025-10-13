@@ -70,6 +70,36 @@ Include periods of:
 - Major market fear events
 
 Output only the dates, no explanations:
+""",
+
+            "low_volatility": """
+List dates from 2000-2024 when markets showed very low volatility.
+Include periods when VIX was consistently below 15 and markets were calm.
+
+Format: YYYY-MM-DD (one per line)
+
+Include periods of:
+- VIX <15 for extended periods
+- Calm, steady market conditions
+- Low daily price movements
+- "Goldilocks" economic periods
+
+Output only the dates, no explanations:
+""",
+
+            "bull_market_steady": """
+List dates from 2000-2024 during steady bull market climbs.
+Include periods of gradual, consistent upward market movement.
+
+Format: YYYY-MM-DD (one per line)
+
+Include periods of:
+- Steady upward trends without major corrections
+- Gradual price appreciation over weeks/months
+- Calm but positive market sentiment
+- Recovery periods with consistent gains
+
+Output only the dates, no explanations:
 """
         }
 
@@ -133,6 +163,46 @@ Output only the dates, no explanations:
                 # Flash crashes and spikes
                 "2018-02-05", "2018-02-06", "2015-08-24", "2011-08-08",
                 "2010-05-06", "2007-02-27", "2002-07-19", "2001-09-17"
+            ],
+
+            "low_volatility": [
+                # 2017 - Famous low VIX year
+                "2017-01-03", "2017-02-15", "2017-04-10", "2017-05-08",
+                "2017-07-10", "2017-09-05", "2017-11-15",
+
+                # 2014-2015 calm periods
+                "2014-03-15", "2014-06-20", "2014-09-10", "2014-11-25",
+                "2015-02-10", "2015-05-15", "2015-07-20",
+
+                # 2012-2013 recovery periods
+                "2012-03-20", "2012-07-15", "2012-09-25", "2012-11-30",
+                "2013-01-15", "2013-04-25", "2013-08-10", "2013-10-15",
+
+                # 2006-2007 pre-crisis calm
+                "2006-08-15", "2006-10-20", "2007-01-10", "2007-04-15",
+                "2007-06-25", "2007-08-01",
+
+                # 2004-2005 steady periods
+                "2004-03-15", "2004-07-20", "2005-04-15", "2005-07-25"
+            ],
+
+            "bull_market_steady": [
+                # 2013-2015 steady climb post-QE
+                "2013-02-20", "2013-05-15", "2013-08-05", "2013-10-25",
+                "2014-01-15", "2014-04-10", "2014-07-15", "2014-10-05",
+                "2015-01-20", "2015-04-15",
+
+                # 2016-2017 Trump rally
+                "2016-11-15", "2016-12-20", "2017-01-25", "2017-03-15",
+                "2017-05-10", "2017-07-25", "2017-09-15", "2017-11-05",
+
+                # 2009-2011 recovery climb
+                "2009-05-15", "2009-08-20", "2009-11-10", "2010-02-25",
+                "2010-07-15", "2010-09-20", "2011-01-15", "2011-04-25",
+
+                # 2003-2006 steady bull
+                "2003-05-15", "2003-09-10", "2004-01-20", "2004-05-25",
+                "2005-01-10", "2005-08-15", "2006-02-15", "2006-05-20"
             ]
         }
 
@@ -301,7 +371,7 @@ Output only the dates, no explanations:
 
         pattern_library = {}
 
-        for pattern_type in ["fed_rate_hikes", "market_crashes", "vix_spikes"]:
+        for pattern_type in ["fed_rate_hikes", "market_crashes", "vix_spikes", "low_volatility", "bull_market_steady"]:
             print(f"\n📊 Building {pattern_type} pattern...")
 
             # Get dates from LLM

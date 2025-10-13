@@ -21,7 +21,7 @@ def test_embedding_quality():
 
     # Get all pattern embeddings
     patterns = {}
-    pattern_types = ["fed_rate_hikes", "market_crashes", "vix_spikes"]
+    pattern_types = ["fed_rate_hikes", "market_crashes", "vix_spikes", "low_volatility", "bull_market_steady"]
 
     for pattern_type in pattern_types:
         result = query_interface.query_pattern(f"Find {pattern_type.replace('_', ' ')}")
@@ -56,20 +56,48 @@ def test_embedding_quality():
     print(f"\n🎯 Test 2: Expected Financial Relationships")
     print("-" * 40)
 
-    # Market crashes and VIX spikes should be more similar (both represent market stress)
-    crash_vix_sim = similarities[("market_crashes", "vix_spikes")]
-    fed_crash_sim = similarities[("fed_rate_hikes", "market_crashes")]
-    fed_vix_sim = similarities[("fed_rate_hikes", "vix_spikes")]
+    # Define expected relationships
+    stress_patterns = ["market_crashes", "vix_spikes", "fed_rate_hikes"]
+    calm_patterns = ["low_volatility", "bull_market_steady"]
 
-    print(f"Market crashes vs VIX spikes: {crash_vix_sim:.3f}")
-    print(f"Fed hikes vs Market crashes: {fed_crash_sim:.3f}")
-    print(f"Fed hikes vs VIX spikes: {fed_vix_sim:.3f}")
+    print("Stress pattern similarities:")
+    if ("market_crashes", "vix_spikes") in similarities:
+        crash_vix_sim = similarities[("market_crashes", "vix_spikes")]
+        print(f"  Market crashes vs VIX spikes: {crash_vix_sim:.3f}")
 
-    # Expected: crashes and VIX should be most similar
-    if crash_vix_sim > fed_crash_sim and crash_vix_sim > fed_vix_sim:
-        print("✅ GOOD: Market crashes and VIX spikes are most similar (both = market stress)")
+    if ("fed_rate_hikes", "market_crashes") in similarities:
+        fed_crash_sim = similarities[("fed_rate_hikes", "market_crashes")]
+        print(f"  Fed hikes vs Market crashes: {fed_crash_sim:.3f}")
+
+    print("\nCalm pattern similarities:")
+    if ("low_volatility", "bull_market_steady") in similarities:
+        calm_bull_sim = similarities[("low_volatility", "bull_market_steady")]
+        print(f"  Low volatility vs Bull market: {calm_bull_sim:.3f}")
+
+    print("\nCross-regime similarities (should be lower):")
+    cross_regime_sims = []
+    for stress in stress_patterns:
+        for calm in calm_patterns:
+            key1, key2 = sorted([stress, calm])
+            if (key1, key2) in similarities:
+                sim = similarities[(key1, key2)]
+                cross_regime_sims.append(sim)
+                print(f"  {stress} vs {calm}: {sim:.3f}")
+
+    # Calculate average cross-regime similarity
+    avg_cross_regime = None
+    if cross_regime_sims:
+        avg_cross_regime = sum(cross_regime_sims) / len(cross_regime_sims)
+        print(f"\nAverage cross-regime similarity: {avg_cross_regime:.3f}")
+
+        if avg_cross_regime < 0.7:
+            print("✅ EXCELLENT: Different market regimes are well separated!")
+        elif avg_cross_regime < 0.8:
+            print("✅ GOOD: Different market regimes show some separation")
+        else:
+            print("⚠️  CONCERNING: Different market regimes too similar")
     else:
-        print("⚠️  UNEXPECTED: Market stress patterns aren't clustering together")
+        print("\nNo cross-regime comparisons available")
 
     # Test 3: Embedding variance (are they all similar?)
     print(f"\n📈 Test 3: Embedding Distinctiveness")
@@ -126,12 +154,49 @@ def test_embedding_quality():
     print(f"\n📋 Summary Assessment")
     print("-" * 20)
 
-    if crash_vix_sim > 0.7 and avg_similarity < 0.8 and abs(real_vs_random) < 0.2:
-        print("🎉 EXCELLENT: Embeddings appear to capture meaningful financial patterns!")
-    elif crash_vix_sim > 0.5 and avg_similarity < 0.9:
-        print("✅ GOOD: Embeddings show reasonable financial pattern structure")
+    # Calculate assessment based on multiple factors
+    assessment_score = 0
+    reasons = []
+
+    # Check cross-regime separation
+    if cross_regime_sims and len(cross_regime_sims) > 0 and avg_cross_regime is not None and avg_cross_regime < 0.7:
+        assessment_score += 3
+        reasons.append("Excellent cross-regime separation")
+    elif cross_regime_sims and avg_cross_regime is not None and avg_cross_regime < 0.8:
+        assessment_score += 2
+        reasons.append("Good cross-regime separation")
+    elif cross_regime_sims:
+        assessment_score += 0
+        reasons.append("Poor cross-regime separation")
+
+    # Check overall distinctiveness
+    if avg_similarity < 0.7:
+        assessment_score += 2
+        reasons.append("Good overall distinctiveness")
+    elif avg_similarity < 0.9:
+        assessment_score += 1
+        reasons.append("Moderate distinctiveness")
+    else:
+        assessment_score += 0
+        reasons.append("Poor distinctiveness")
+
+    # Check vs random
+    if abs(real_vs_random) < 0.2:
+        assessment_score += 1
+        reasons.append("Distinct from random")
+
+    # Final assessment
+    if assessment_score >= 5:
+        print("🎉 EXCELLENT: Embeddings capture meaningful financial patterns!")
+    elif assessment_score >= 3:
+        print("✅ GOOD: Embeddings show reasonable pattern structure")
+    elif assessment_score >= 1:
+        print("🤔 MIXED: Some pattern structure but needs improvement")
     else:
         print("⚠️  CONCERNING: Embeddings may not be capturing meaningful patterns")
+
+    print(f"\nFactors: {', '.join(reasons)}")
+    print(f"Score: {assessment_score}/6")
 
     return patterns, similarities
 
