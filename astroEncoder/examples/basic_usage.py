@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # Add the astroEncoder package to the path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from astroEncoder import AstroEncoder
 
@@ -54,7 +54,7 @@ def example_specific_date():
     encoder = AstroEncoder()
 
     # Analyze a specific date: January 1, 2024
-    target_date = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    target_date = datetime(2025, 10, 13, 12, 0, 0, tzinfo=timezone.utc)
     data = encoder.encode_date(target_date, location='nyc', include_houses=True)
 
     print(f"Analysis for: {target_date.strftime('%B %d, %Y at %H:%M UTC')}")
