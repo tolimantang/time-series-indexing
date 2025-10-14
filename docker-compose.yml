@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: astro_postgres
+    environment:
+      POSTGRES_DB: astro_financial
+      POSTGRES_USER: astro_user
+      POSTGRES_PASSWORD: astro_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U astro_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ChromaDB runs in-process with the API, so no separate container needed
+  # But you could run it separately if preferred:
+  # chromadb:
+  #   image: chromadb/chroma:latest
+  #   container_name: astro_chromadb
+  #   ports:
+  #     - "8000:8000"
+  #   volumes:
+  #     - chroma_data:/chroma/chroma
+
+volumes:
+  postgres_data:
+  # chroma_data:
