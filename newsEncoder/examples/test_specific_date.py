@@ -105,7 +105,7 @@ def analyze_date(year, month, day):
 
 if __name__ == "__main__":
     # Default to January 9, 2025 - change these values as needed
-    analyze_date(2025, 1, 9)
+    analyze_date(2024, 1, 9)
 
     print("\n" + "=" * 60)
     print("To test other dates, modify the analyze_date() call above")

@@ -149,30 +149,89 @@ class NewsEncoder:
             return []
 
     def _get_free_news_sources(self, date: datetime) -> List[Dict[str, Any]]:
-        """Get news from free sources (mock implementation for now)."""
-        # This is a placeholder for free news sources
-        # In a real implementation, you might scrape financial news sites
-        # or use other free APIs
-
+        """Get news from free sources (mock implementation with date-specific variations)."""
         date_str = date.strftime('%Y-%m-%d')
+        year = date.year
+        month = date.month
+        day = date.day
 
-        # Mock some sample financial events for demonstration
-        sample_articles = [
-            {
-                'title': 'Market Update: Stocks Close Mixed on Economic Data',
-                'description': 'Major indices showed mixed performance as investors digested economic data releases.',
-                'publishedAt': f'{date_str}T16:00:00Z',
-                'source': {'name': 'Financial Sample'},
-                'content': 'Markets showed mixed signals today with technology stocks leading gains while energy lagged.'
-            },
-            {
-                'title': 'Fed Officials Signal Cautious Approach to Rate Changes',
-                'description': 'Federal Reserve officials indicated a measured approach to monetary policy adjustments.',
-                'publishedAt': f'{date_str}T14:30:00Z',
-                'source': {'name': 'Economic Times Sample'},
-                'content': 'Federal Reserve officials emphasized data-dependent approach to future policy decisions.'
-            }
-        ]
+        # Create date-specific variations for demonstration
+        sample_articles = []
+
+        # Historical event simulation based on dates
+        if year == 2008 and month == 9 and day == 15:
+            sample_articles = [
+                {
+                    'title': 'Lehman Brothers Files for Bankruptcy',
+                    'description': 'Investment bank Lehman Brothers filed for bankruptcy protection in largest failure in US history.',
+                    'publishedAt': f'{date_str}T08:00:00Z',
+                    'source': {'name': 'Financial Crisis News'},
+                    'content': 'Global financial markets in turmoil as Lehman Brothers collapses, triggering credit crisis.'
+                },
+                {
+                    'title': 'Markets Crash on Financial System Fears',
+                    'description': 'Stock markets plummet as investors flee to safety amid banking sector collapse.',
+                    'publishedAt': f'{date_str}T16:00:00Z',
+                    'source': {'name': 'Market Watch'},
+                    'content': 'VIX volatility index spikes above 40 as panic selling grips Wall Street.'
+                }
+            ]
+        elif year == 2020 and month == 3 and (10 <= day <= 25):
+            sample_articles = [
+                {
+                    'title': 'COVID-19 Pandemic Triggers Market Crash',
+                    'description': 'Global markets collapse as coronavirus pandemic spreads worldwide.',
+                    'publishedAt': f'{date_str}T09:00:00Z',
+                    'source': {'name': 'Pandemic News'},
+                    'content': 'S&P 500 down over 30% from February highs as lockdowns halt economic activity.'
+                },
+                {
+                    'title': 'Fed Cuts Rates to Zero in Emergency Move',
+                    'description': 'Federal Reserve slashes interest rates to near zero and announces QE program.',
+                    'publishedAt': f'{date_str}T14:00:00Z',
+                    'source': {'name': 'Fed Watch'},
+                    'content': 'Powell announces unlimited bond purchases to support credit markets.'
+                }
+            ]
+        elif year >= 2022 and month >= 3:
+            # Recent period - inflation/rate hiking cycle
+            sample_articles = [
+                {
+                    'title': 'Fed Continues Aggressive Rate Hiking Campaign',
+                    'description': 'Federal Reserve raises rates by 75 basis points to combat persistent inflation.',
+                    'publishedAt': f'{date_str}T14:00:00Z',
+                    'source': {'name': 'Fed Policy News'},
+                    'content': 'Powell emphasizes commitment to bringing inflation back to 2% target.'
+                },
+                {
+                    'title': 'Inflation Data Shows Persistent Price Pressures',
+                    'description': 'CPI remains elevated above Fed target despite rate increases.',
+                    'publishedAt': f'{date_str}T08:30:00Z',
+                    'source': {'name': 'Economic Data'},
+                    'content': 'Core inflation readings show broad-based price increases across sectors.'
+                }
+            ]
+        else:
+            # Default sample for other dates
+            market_sentiment = "mixed" if (day % 2 == 0) else "positive"
+            fed_action = "holds rates steady" if (month % 2 == 0) else "signals policy patience"
+
+            sample_articles = [
+                {
+                    'title': f'Market Update: Stocks Close {market_sentiment.title()} on Economic Data',
+                    'description': f'Major indices showed {market_sentiment} performance as investors digested economic data releases.',
+                    'publishedAt': f'{date_str}T16:00:00Z',
+                    'source': {'name': 'Financial Sample'},
+                    'content': f'Markets showed {market_sentiment} signals with sector rotation based on data releases.'
+                },
+                {
+                    'title': f'Fed Officials Signal Policy Direction for {year}',
+                    'description': f'Federal Reserve {fed_action} amid economic data review.',
+                    'publishedAt': f'{date_str}T14:30:00Z',
+                    'source': {'name': 'Economic Times Sample'},
+                    'content': f'Federal Reserve officials emphasized data-dependent approach for {year} policy.'
+                }
+            ]
 
         return sample_articles
 
@@ -205,17 +264,57 @@ class NewsEncoder:
         return sample_events
 
     def _get_market_summary(self, date: datetime) -> MarketSummary:
-        """Get market data summary (mock implementation)."""
-        # This would integrate with Alpha Vantage, Yahoo Finance, etc.
+        """Get market data summary (mock implementation with date-specific variations)."""
+        year = date.year
+        month = date.month
+        day = date.day
 
-        # Sample market data
-        return MarketSummary(
-            major_indices={'SPY': 1.2, 'QQQ': 0.8, 'DIA': 0.5},
-            currencies={'EUR/USD': -0.3, 'GBP/USD': 0.1, 'USD/JPY': 0.2},
-            commodities={'Oil': 2.1, 'Gold': -0.8, 'Silver': -1.2},
-            volatility={'VIX': 15.2},
-            sector_performance={'Technology': 2.1, 'Energy': -1.8, 'Financials': 0.9}
-        )
+        # Create date-specific market scenarios
+        if year == 2008 and month == 9 and day == 15:
+            # Lehman collapse - massive sell-off
+            return MarketSummary(
+                major_indices={'SPY': -4.7, 'QQQ': -5.1, 'DIA': -4.4},
+                currencies={'EUR/USD': 1.2, 'GBP/USD': -0.8, 'USD/JPY': -2.1},
+                commodities={'Oil': -6.1, 'Gold': 2.8, 'Silver': 1.2},
+                volatility={'VIX': 42.3},
+                sector_performance={'Technology': -5.8, 'Energy': -7.2, 'Financials': -12.4}
+            )
+        elif year == 2020 and month == 3 and (10 <= day <= 25):
+            # COVID crash
+            return MarketSummary(
+                major_indices={'SPY': -9.5, 'QQQ': -8.2, 'DIA': -10.1},
+                currencies={'EUR/USD': -1.8, 'GBP/USD': -2.1, 'USD/JPY': 1.5},
+                commodities={'Oil': -24.2, 'Gold': 1.8, 'Silver': -3.2},
+                volatility={'VIX': 78.6},
+                sector_performance={'Technology': -6.2, 'Energy': -18.4, 'Financials': -15.1}
+            )
+        elif year >= 2022 and month >= 3:
+            # Inflation/rate hiking period - moderate volatility
+            vix_level = 18.5 + (day % 10)  # Vary VIX by day
+            return MarketSummary(
+                major_indices={'SPY': 0.2 - (day % 5) * 0.3, 'QQQ': -0.8 + (day % 4) * 0.4, 'DIA': 0.1},
+                currencies={'EUR/USD': -0.2, 'GBP/USD': -0.1, 'USD/JPY': 0.3},
+                commodities={'Oil': 1.1 + (month % 3), 'Gold': -0.5, 'Silver': -0.8},
+                volatility={'VIX': vix_level},
+                sector_performance={'Technology': -1.2, 'Energy': 2.8, 'Financials': 0.5}
+            )
+        else:
+            # Default with date-based variations
+            spy_change = (day % 3) - 1  # -1, 0, or 1
+            qqq_change = (day % 4) - 1.5  # -1.5 to 2.5
+            vix_level = 12.5 + (month % 8) + (day % 5)
+
+            return MarketSummary(
+                major_indices={'SPY': spy_change + 0.2, 'QQQ': qqq_change + 0.8, 'DIA': (day % 3) * 0.3},
+                currencies={'EUR/USD': -0.3 + (month % 3) * 0.2, 'GBP/USD': 0.1, 'USD/JPY': 0.2},
+                commodities={'Oil': 2.1 - (day % 4), 'Gold': -0.8 + (month % 5) * 0.2, 'Silver': -1.2},
+                volatility={'VIX': vix_level},
+                sector_performance={
+                    'Technology': 2.1 - (day % 6) * 0.5,
+                    'Energy': -1.8 + (month % 4) * 1.0,
+                    'Financials': 0.9 - (day % 3) * 0.3
+                }
+            )
 
     def _process_news_articles(self, news_data: FinancialNewsData, articles: List[Dict[str, Any]]):
         """Process and categorize news articles."""
