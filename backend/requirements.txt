@@ -20,7 +20,7 @@ numpy==1.24.3
 
 # Astronomical calculations (from your existing project)
 pyephem==9.99
-swisseph==2.10.03.1
+pyswisseph==2.10.03.2
 
 # Utility
 python-dateutil==2.8.2
