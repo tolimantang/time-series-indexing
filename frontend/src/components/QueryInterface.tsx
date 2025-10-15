@@ -26,7 +26,7 @@ export default function QueryInterface({ onSearchResults, onPatternAnalysis }: Q
       const results = await AstroFinancialAPI.semanticSearch({
         query: query.trim(),
         max_results: maxResults,
-        include_market_data: true
+        include_market_data: false
       });
       onSearchResults(results);
     } catch (error) {
