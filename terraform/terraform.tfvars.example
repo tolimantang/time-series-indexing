@@ -1,0 +1,39 @@
+# Example Terraform variables file for AstroFinancial
+# Copy this file to terraform.tfvars and customize the values
+
+# AWS Configuration
+aws_region = "us-west-2"
+environment = "production"
+project_name = "astro-financial"
+
+# EKS Configuration
+cluster_version = "1.28"
+node_instance_types = ["m5.large", "m5.xlarge"]
+node_desired_capacity = 2
+node_max_capacity = 10
+node_min_capacity = 1
+
+# Networking
+vpc_cidr = "10.0.0.0/16"
+enable_nat_gateway = true
+enable_vpn_gateway = false
+
+# Security
+allowed_cidr_blocks = []  # Add your IP ranges for cluster access
+enable_deletion_protection = true
+
+# Database Configuration
+database_instance_class = "db.t3.medium"
+database_allocated_storage = 100
+database_max_allocated_storage = 1000
+database_backup_retention_period = 7
+
+# Add-ons
+enable_irsa = true
+enable_cluster_autoscaler = true
+enable_aws_load_balancer_controller = true
+enable_external_secrets = true
+
+# Domain and SSL
+domain_name = "api.astrofinancial.com"
+ssl_certificate_arn = ""  # Add your ACM certificate ARN

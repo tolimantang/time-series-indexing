@@ -1,0 +1,169 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: astro-indexer
+  namespace: astro-financial
+  labels:
+    app: astro-indexer
+    component: indexer
+spec:
+  schedule: "0 6 * * *"  # Daily at 6 AM UTC
+  timeZone: "UTC"
+  concurrencyPolicy: Forbid  # Don't run concurrent indexing jobs
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      activeDeadlineSeconds: 3600  # 1 hour timeout
+      template:
+        metadata:
+          labels:
+            app: astro-indexer
+            component: indexer
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: astro-indexer-sa
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+          containers:
+          - name: indexer
+            image: your-registry/astro-indexer:latest
+            imagePullPolicy: Always
+            command:
+            - python
+            - /app/scripts/daily_indexer.py
+            env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: astro-secrets
+                  key: DATABASE_URL
+            - name: CHROMA_PATH
+              valueFrom:
+                configMapKeyRef:
+                  name: astro-config
+                  key: CHROMA_PATH
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: astro-config
+                  key: LOG_LEVEL
+            - name: BATCH_SIZE
+              value: "100"
+            - name: DAYS_TO_INDEX
+              value: "1"  # Index yesterday's data
+            resources:
+              requests:
+                memory: "4Gi"
+                cpu: "1000m"
+              limits:
+                memory: "8Gi"
+                cpu: "2000m"
+            volumeMounts:
+            - name: chroma-storage
+              mountPath: /data/chroma
+            - name: tmp
+              mountPath: /tmp
+          volumes:
+          - name: chroma-storage
+            persistentVolumeClaim:
+              claimName: chroma-pvc
+          - name: tmp
+            emptyDir: {}
+          nodeSelector:
+            kubernetes.io/arch: amd64
+          tolerations:
+          - key: "ml-workload"
+            operator: "Equal"
+            value: "true"
+            effect: "NoSchedule"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: astro-indexer-sa
+  namespace: astro-financial
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::YOUR-ACCOUNT-ID:role/astro-indexer-role
+---
+# Manual indexer job for backfilling data
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: astro-indexer-backfill
+  namespace: astro-financial
+  labels:
+    app: astro-indexer
+    component: backfill
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 7200  # 2 hour timeout
+  template:
+    metadata:
+      labels:
+        app: astro-indexer
+        component: backfill
+    spec:
+      restartPolicy: Never
+      serviceAccountName: astro-indexer-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: indexer
+        image: your-registry/astro-indexer:latest
+        imagePullPolicy: Always
+        command:
+        - python
+        - /app/scripts/backfill_indexer.py
+        - --start-date
+        - "2020-01-01"
+        - --end-date
+        - "2024-12-31"
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: astro-secrets
+              key: DATABASE_URL
+        - name: CHROMA_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: astro-config
+              key: CHROMA_PATH
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: astro-config
+              key: LOG_LEVEL
+        - name: BATCH_SIZE
+          value: "50"
+        resources:
+          requests:
+            memory: "8Gi"
+            cpu: "2000m"
+          limits:
+            memory: "16Gi"
+            cpu: "4000m"
+        volumeMounts:
+        - name: chroma-storage
+          mountPath: /data/chroma
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: chroma-storage
+        persistentVolumeClaim:
+          claimName: chroma-pvc
+      - name: tmp
+        emptyDir: {}
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      tolerations:
+      - key: "ml-workload"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"

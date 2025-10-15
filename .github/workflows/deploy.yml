@@ -1,0 +1,138 @@
+name: Deploy to EKS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'deploy/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-west-2
+  EKS_CLUSTER_NAME: astro-financial-cluster
+  ECR_REPOSITORY: astro-financial
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build, tag, and push API image to Amazon ECR
+      id: build-api-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Build API image
+        docker build -f backend/Dockerfile -t $ECR_REGISTRY/$ECR_REPOSITORY-api:$IMAGE_TAG backend/
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY-api:$IMAGE_TAG
+        echo "api-image=$ECR_REGISTRY/$ECR_REPOSITORY-api:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Build, tag, and push indexer image to Amazon ECR
+      id: build-indexer-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Build indexer image
+        docker build -f backend/Dockerfile.indexer -t $ECR_REGISTRY/$ECR_REPOSITORY-indexer:$IMAGE_TAG backend/
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY-indexer:$IMAGE_TAG
+        echo "indexer-image=$ECR_REGISTRY/$ECR_REPOSITORY-indexer:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Update kube config
+      run: aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION
+
+    - name: Deploy to EKS
+      env:
+        API_IMAGE: ${{ steps.build-api-image.outputs.api-image }}
+        INDEXER_IMAGE: ${{ steps.build-indexer-image.outputs.indexer-image }}
+      run: |
+        # Create namespace if it doesn't exist
+        kubectl apply -f deploy/k8s/namespace.yaml
+
+        # Apply storage and config
+        kubectl apply -f deploy/k8s/storage.yaml
+        kubectl apply -f deploy/k8s/secrets.yaml
+
+        # Update image tags in deployment files
+        sed -i "s|your-registry/astro-api:latest|$API_IMAGE|g" deploy/k8s/api-deployment.yaml
+        sed -i "s|your-registry/astro-indexer:latest|$INDEXER_IMAGE|g" deploy/k8s/indexer-cronjob.yaml
+
+        # Deploy API
+        kubectl apply -f deploy/k8s/api-deployment.yaml
+
+        # Deploy indexer
+        kubectl apply -f deploy/k8s/indexer-cronjob.yaml
+
+        # Deploy ingress
+        kubectl apply -f deploy/k8s/ingress.yaml
+
+        # Wait for deployment
+        kubectl rollout status deployment/astro-api -n astro-financial --timeout=300s
+
+    - name: Verify deployment
+      run: |
+        kubectl get pods -n astro-financial
+        kubectl get services -n astro-financial
+        kubectl get ingress -n astro-financial
+
+    - name: Run database migrations
+      run: |
+        # Get the API pod name
+        API_POD=$(kubectl get pods -n astro-financial -l app=astro-api -o jsonpath="{.items[0].metadata.name}")
+
+        # Run migrations
+        kubectl exec -n astro-financial $API_POD -- python -c "
+        import asyncio
+        import asyncpg
+        import os
+
+        async def run_migrations():
+            conn = await asyncpg.connect(os.getenv('DATABASE_URL'))
+            try:
+                with open('/app/migrations/001_initial_schema.sql', 'r') as f:
+                    sql = f.read()
+                await conn.execute(sql)
+                print('Migrations completed successfully')
+            except Exception as e:
+                print(f'Migration error: {e}')
+            finally:
+                await conn.close()
+
+        asyncio.run(run_migrations())
+        "
+
+  notify:
+    name: Notify Deployment Status
+    runs-on: ubuntu-latest
+    needs: build-and-deploy
+    if: always()
+    steps:
+    - name: Notify Success
+      if: needs.build-and-deploy.result == 'success'
+      run: |
+        echo "✅ Deployment to EKS completed successfully"
+
+    - name: Notify Failure
+      if: needs.build-and-deploy.result == 'failure'
+      run: |
+        echo "❌ Deployment to EKS failed"
+        exit 1

@@ -5,6 +5,7 @@ import Layout from '@/components/Layout';
 import QueryInterface from '@/components/QueryInterface';
 import ResultsDisplay from '@/components/ResultsDisplay';
 import PatternAnalysis from '@/components/PatternAnalysis';
+import { ProtectedRoute } from '@/components/ProtectedRoute';
 import type { QueryResponse, PatternAnalysisResponse } from '@/types/api';
 
 export default function HomePage() {
@@ -23,8 +24,9 @@ export default function HomePage() {
   };
 
   return (
-    <Layout>
-      <div className="space-y-8">
+    <ProtectedRoute>
+      <Layout>
+        <div className="space-y-8">
         {/* Hero section */}
         <div className="text-center py-12">
           <h1 className="text-4xl md:text-6xl font-bold text-gray-900 dark:text-white mb-4">
@@ -188,7 +190,8 @@ export default function HomePage() {
             </div>
           </div>
         )}
-      </div>
-    </Layout>
+        </div>
+      </Layout>
+    </ProtectedRoute>
   );
 }

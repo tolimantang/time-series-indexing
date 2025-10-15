@@ -1,0 +1,42 @@
+# EFS Storage Class for ChromaDB persistence
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: efs-sc
+  namespace: astro-financial
+provisioner: efs.csi.aws.com
+parameters:
+  provisioningMode: efs-ap
+  fileSystemId: fs-0123456789abcdef0  # Replace with your EFS file system ID
+  directoryPerms: "700"
+  uid: "1000"
+  gid: "1000"
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+---
+# Persistent Volume Claim for ChromaDB data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: chroma-pvc
+  namespace: astro-financial
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: efs-sc
+  resources:
+    requests:
+      storage: 100Gi
+---
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: astro-config
+  namespace: astro-financial
+data:
+  CHROMA_PATH: "/data/chroma"
+  LOG_LEVEL: "INFO"
+  MAX_WORKERS: "4"
+  API_TIMEOUT: "30"
+  CORS_ORIGINS: "https://yourdomain.com,https://*.vercel.app"

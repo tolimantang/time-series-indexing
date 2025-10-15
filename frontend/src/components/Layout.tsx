@@ -3,6 +3,8 @@
 import React, { useState, useEffect } from 'react';
 import { Moon, Sun, Github, Activity, Database, Sparkles } from 'lucide-react';
 import AstroFinancialAPI from '@/lib/api';
+import { UserProfile } from './UserProfile';
+import { useAuth } from '../contexts/AuthContext';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -12,6 +14,7 @@ export default function Layout({ children }: LayoutProps) {
   const [isDark, setIsDark] = useState(false);
   const [apiStatus, setApiStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
   const [systemStats, setSystemStats] = useState<any>(null);
+  const { isAuthenticated } = useAuth();
 
   useEffect(() => {
     checkApiStatus();
@@ -84,15 +87,17 @@ export default function Layout({ children }: LayoutProps) {
             {/* Status and controls */}
             <div className="flex items-center gap-4">
               {/* API Status */}
-              <div className="flex items-center gap-2 text-sm">
-                <div className={`w-2 h-2 rounded-full ${getStatusColor().replace('text-', 'bg-')}`} />
-                <span className={`${getStatusColor()}`}>
-                  {getStatusText()}
-                </span>
-              </div>
+              {isAuthenticated && (
+                <div className="flex items-center gap-2 text-sm">
+                  <div className={`w-2 h-2 rounded-full ${getStatusColor().replace('text-', 'bg-')}`} />
+                  <span className={`${getStatusColor()}`}>
+                    {getStatusText()}
+                  </span>
+                </div>
+              )}
 
               {/* System stats */}
-              {systemStats && (
+              {isAuthenticated && systemStats && (
                 <div className="hidden md:flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
                   {systemStats.postgresql && (
                     <div className="flex items-center gap-1">
@@ -128,6 +133,9 @@ export default function Layout({ children }: LayoutProps) {
               >
                 <Github className="w-5 h-5" />
               </a>
+
+              {/* User Profile */}
+              {isAuthenticated && <UserProfile />}
             </div>
           </div>
         </div>
