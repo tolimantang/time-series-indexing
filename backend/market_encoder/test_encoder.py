@@ -61,6 +61,7 @@ def test_market_encoder():
             "high volatility market decline",
             n_results=3
         )
+        logger.info(f"{query_results}")
         logger.info(f"Query returned {query_results['count']} results")
 
         # Test daily update
