@@ -143,24 +143,24 @@ class YahooFinanceSource:
 
 
 class MarketDataManager:
-    """Manages multiple data sources with fallback."""
+    """Manages multiple data sources with Yahoo Finance as primary."""
 
     def __init__(self, alpha_vantage_key: Optional[str] = None):
-        self.alpha_vantage = AlphaVantageSource(alpha_vantage_key)
-        self.yahoo = YahooFinanceSource()
+        self.yahoo = YahooFinanceSource()  # Primary source
+        self.alpha_vantage = AlphaVantageSource(alpha_vantage_key)  # Fallback only
 
     def get_market_data(self, symbol: str, source: str = "auto") -> pd.DataFrame:
-        """Get market data with automatic fallback."""
+        """Get market data with Yahoo Finance as primary source."""
 
-        if source == "alpha_vantage" or (source == "auto" and self.alpha_vantage.api_key):
-            logger.info(f"Fetching {symbol} from Alpha Vantage")
-            df = self.alpha_vantage.get_daily_data(symbol)
+        if source == "yahoo" or source == "auto":
+            logger.info(f"Fetching {symbol} from Yahoo Finance")
+            df = self.yahoo.get_daily_data(symbol)
             if not df.empty:
                 return df
 
-        if source == "yahoo" or source == "auto":
-            logger.info(f"Fetching {symbol} from Yahoo Finance (fallback)")
-            return self.yahoo.get_daily_data(symbol)
+        if source == "alpha_vantage" and self.alpha_vantage.api_key:
+            logger.info(f"Fetching {symbol} from Alpha Vantage (fallback)")
+            return self.alpha_vantage.get_daily_data(symbol)
 
         logger.error(f"No data source available for {symbol}")
         return pd.DataFrame()

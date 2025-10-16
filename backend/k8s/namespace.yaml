@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: time-series-indexing
+  labels:
+    name: time-series-indexing
+    purpose: market-data-processing

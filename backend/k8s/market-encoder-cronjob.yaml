@@ -1,0 +1,53 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: market-encoder-daily
+  namespace: time-series-indexing
+  labels:
+    app: market-encoder
+    component: scheduler
+spec:
+  # Run daily at 6:30 AM UTC (after markets close)
+  schedule: "30 6 * * 1-5"  # Weekdays only
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: market-encoder
+            component: daily-job
+        spec:
+          containers:
+          - name: market-encoder-daily
+            image: market-encoder:latest
+            imagePullPolicy: Always
+            command:
+            - python
+            - scripts/run_market_encoder.py
+            - update
+            env:
+            - name: CHROMA_DB_PATH
+              value: "/app/data/chroma_db"
+            - name: PYTHONPATH
+              value: "/app"
+            - name: LOG_LEVEL
+              value: "INFO"
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "250m"
+              limits:
+                memory: "2Gi"
+                cpu: "1000m"
+            volumeMounts:
+            - name: chroma-data
+              mountPath: /app/data
+          volumes:
+          - name: chroma-data
+            persistentVolumeClaim:
+              claimName: market-encoder-pvc
+          restartPolicy: OnFailure
+          backoffLimit: 3
