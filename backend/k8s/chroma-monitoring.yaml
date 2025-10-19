@@ -1,0 +1,113 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chroma-monitor-script
+  namespace: time-series-indexing
+data:
+  monitor.sh: |
+    #!/bin/bash
+    set -e
+
+    echo "=== ChromaDB Health Monitor ==="
+    echo "Timestamp: $(date)"
+    echo "Checking ChromaDB storage..."
+
+    # Check disk usage
+    CHROMA_PATH="/app/data/chroma_db"
+    if [ -d "$CHROMA_PATH" ]; then
+        DISK_USAGE=$(du -sh $CHROMA_PATH | cut -f1)
+        echo "ChromaDB storage usage: $DISK_USAGE"
+
+        # Check if SQLite database exists and is readable
+        if [ -f "$CHROMA_PATH/chroma.sqlite3" ]; then
+            echo "✓ ChromaDB SQLite database found"
+
+            # Check file size
+            DB_SIZE=$(stat -f%z "$CHROMA_PATH/chroma.sqlite3" 2>/dev/null || stat -c%s "$CHROMA_PATH/chroma.sqlite3" 2>/dev/null || echo "0")
+            echo "Database size: $(($DB_SIZE / 1024))KB"
+        else
+            echo "⚠ ChromaDB SQLite database not found"
+        fi
+
+        # Check collection directories
+        COLLECTIONS=$(find $CHROMA_PATH -type d -name "*-*-*-*-*" | wc -l)
+        echo "Collection directories: $COLLECTIONS"
+
+    else
+        echo "❌ ChromaDB path not found: $CHROMA_PATH"
+        exit 1
+    fi
+
+    # Test Python connection (optional)
+    if command -v python >/dev/null; then
+        echo "Testing ChromaDB connection..."
+        python -c "
+import chromadb
+import os
+try:
+    client = chromadb.PersistentClient(path=os.getenv('CHROMA_DB_PATH', '/app/data/chroma_db'))
+    collections = client.list_collections()
+    print(f'✓ Connected to ChromaDB, found {len(collections)} collections')
+    if collections:
+        for collection in collections:
+            count = collection.count()
+            print(f'  - {collection.name}: {count} documents')
+except Exception as e:
+    print(f'❌ ChromaDB connection failed: {e}')
+    exit 1
+        "
+    fi
+
+    echo "=== Health check completed ==="
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: chroma-health-monitor
+  namespace: time-series-indexing
+  labels:
+    app: market-encoder
+    component: monitoring
+spec:
+  # Run health check every hour
+  schedule: "0 * * * *"
+  concurrencyPolicy: Allow
+  successfulJobsHistoryLimit: 24  # Keep 24 hours of logs
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: market-encoder
+            component: health-monitor
+        spec:
+          containers:
+          - name: chroma-monitor
+            image: market-encoder:latest
+            command: ["/bin/bash", "/scripts/monitor.sh"]
+            env:
+            - name: CHROMA_DB_PATH
+              value: "/app/data/chroma_db"
+            resources:
+              requests:
+                memory: "64Mi"
+                cpu: "50m"
+              limits:
+                memory: "128Mi"
+                cpu: "100m"
+            volumeMounts:
+            - name: chroma-data
+              mountPath: /app/data
+              readOnly: true
+            - name: monitor-script
+              mountPath: /scripts
+          volumes:
+          - name: chroma-data
+            persistentVolumeClaim:
+              claimName: market-encoder-pvc
+          - name: monitor-script
+            configMap:
+              name: chroma-monitor-script
+              defaultMode: 0755
+          restartPolicy: OnFailure

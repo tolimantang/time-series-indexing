@@ -38,6 +38,10 @@ kubectl apply -f k8s/market-encoder-deployment.yaml
 # Apply CronJob for daily updates
 kubectl apply -f k8s/market-encoder-cronjob.yaml
 
+# Apply backup and monitoring
+kubectl apply -f k8s/chroma-backup-cronjob.yaml
+kubectl apply -f k8s/chroma-monitoring.yaml
+
 echo "✅ Deployment complete!"
 
 # Show status
