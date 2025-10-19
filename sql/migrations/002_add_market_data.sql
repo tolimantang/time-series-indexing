@@ -18,40 +18,13 @@ CREATE TABLE market_data (
     UNIQUE(symbol, trade_date)
 );
 
--- Portfolio positions for tracking user investments
-CREATE TABLE portfolio_positions (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    symbol VARCHAR(10) NOT NULL,
-    entry_date DATE NOT NULL,
-    exit_date DATE,
-    entry_price DECIMAL(12,4) NOT NULL,
-    exit_price DECIMAL(12,4),
-    quantity DECIMAL(12,4) NOT NULL,
-    position_type VARCHAR(10) NOT NULL CHECK (position_type IN ('long', 'short')),
-    status VARCHAR(20) DEFAULT 'open' CHECK (status IN ('open', 'closed', 'partial')),
-    notes TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
 -- Market data performance indexes
 CREATE INDEX idx_market_data_symbol ON market_data(symbol);
 CREATE INDEX idx_market_data_date ON market_data(trade_date DESC);
 CREATE INDEX idx_market_data_symbol_date ON market_data(symbol, trade_date DESC);
 
--- Portfolio indexes for P&L queries
-CREATE INDEX idx_portfolio_user_id ON portfolio_positions(user_id);
-CREATE INDEX idx_portfolio_symbol ON portfolio_positions(symbol);
-CREATE INDEX idx_portfolio_dates ON portfolio_positions(entry_date, exit_date);
-CREATE INDEX idx_portfolio_user_symbol ON portfolio_positions(user_id, symbol);
-
 -- Trigger to update market_data updated_at
 CREATE TRIGGER update_market_data_updated_at BEFORE UPDATE ON market_data
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
--- Trigger to update portfolio_positions updated_at
-CREATE TRIGGER update_portfolio_positions_updated_at BEFORE UPDATE ON portfolio_positions
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Function to calculate daily returns (if not pre-calculated)
@@ -88,40 +61,15 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- View for easy P&L calculations
-CREATE VIEW portfolio_pnl AS
+-- View for market data with calculated returns
+CREATE VIEW market_data_with_returns AS
 SELECT
-    pp.id,
-    pp.user_id,
-    pp.symbol,
-    pp.entry_date,
-    pp.exit_date,
-    pp.entry_price,
-    pp.exit_price,
-    pp.quantity,
-    pp.position_type,
-    pp.status,
-    -- Current market price for open positions
-    COALESCE(pp.exit_price, md_current.close_price) as current_price,
-    -- P&L calculations
+    md.*,
+    LAG(close_price) OVER (PARTITION BY symbol ORDER BY trade_date) as prev_close,
     CASE
-        WHEN pp.position_type = 'long' THEN
-            (COALESCE(pp.exit_price, md_current.close_price) - pp.entry_price) * pp.quantity
-        WHEN pp.position_type = 'short' THEN
-            (pp.entry_price - COALESCE(pp.exit_price, md_current.close_price)) * pp.quantity
-    END as pnl_amount,
-    -- P&L percentage
-    CASE
-        WHEN pp.position_type = 'long' THEN
-            ((COALESCE(pp.exit_price, md_current.close_price) - pp.entry_price) / pp.entry_price) * 100
-        WHEN pp.position_type = 'short' THEN
-            ((pp.entry_price - COALESCE(pp.exit_price, md_current.close_price)) / pp.entry_price) * 100
-    END as pnl_percentage
-FROM portfolio_positions pp
-LEFT JOIN LATERAL (
-    SELECT close_price
-    FROM market_data md
-    WHERE md.symbol = pp.symbol
-    ORDER BY md.trade_date DESC
-    LIMIT 1
-) md_current ON true;
+        WHEN LAG(close_price) OVER (PARTITION BY symbol ORDER BY trade_date) IS NOT NULL
+        THEN (close_price - LAG(close_price) OVER (PARTITION BY symbol ORDER BY trade_date)) /
+             LAG(close_price) OVER (PARTITION BY symbol ORDER BY trade_date)
+        ELSE NULL
+    END as calculated_daily_return
+FROM market_data md;
