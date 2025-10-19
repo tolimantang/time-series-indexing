@@ -1,0 +1,126 @@
+# Market Encoder Securities Configuration
+# Define which securities to fetch and encode daily
+
+securities:
+  # Major Market Indices
+  indices:
+    - symbol: "^GSPC"     # S&P 500
+      name: "S&P 500 Index"
+      yahoo_symbol: "^GSPC"
+      db_symbol: "SPX"
+      enabled: true
+
+    - symbol: "^DJI"      # Dow Jones
+      name: "Dow Jones Industrial Average"
+      yahoo_symbol: "^DJI"
+      db_symbol: "DJI"
+      enabled: true
+
+    - symbol: "^IXIC"     # NASDAQ
+      name: "NASDAQ Composite"
+      yahoo_symbol: "^IXIC"
+      db_symbol: "IXIC"
+      enabled: true
+
+    - symbol: "^RUT"      # Russell 2000
+      name: "Russell 2000"
+      yahoo_symbol: "^RUT"
+      db_symbol: "RUT"
+      enabled: false  # Disabled by default
+
+  # Major ETFs
+  etfs:
+    - symbol: "SPY"       # SPDR S&P 500
+      name: "SPDR S&P 500 ETF"
+      yahoo_symbol: "SPY"
+      db_symbol: "SPY"
+      enabled: true
+
+    - symbol: "QQQ"       # Invesco QQQ
+      name: "Invesco QQQ ETF"
+      yahoo_symbol: "QQQ"
+      db_symbol: "QQQ"
+      enabled: true
+
+    - symbol: "IWM"       # iShares Russell 2000
+      name: "iShares Russell 2000 ETF"
+      yahoo_symbol: "IWM"
+      db_symbol: "IWM"
+      enabled: false
+
+  # Individual Stocks (Tech Giants)
+  stocks:
+    - symbol: "AAPL"      # Apple
+      name: "Apple Inc."
+      yahoo_symbol: "AAPL"
+      db_symbol: "AAPL"
+      enabled: true
+
+    - symbol: "MSFT"      # Microsoft
+      name: "Microsoft Corporation"
+      yahoo_symbol: "MSFT"
+      db_symbol: "MSFT"
+      enabled: true
+
+    - symbol: "GOOGL"     # Alphabet
+      name: "Alphabet Inc."
+      yahoo_symbol: "GOOGL"
+      db_symbol: "GOOGL"
+      enabled: true
+
+    - symbol: "AMZN"      # Amazon
+      name: "Amazon.com Inc."
+      yahoo_symbol: "AMZN"
+      db_symbol: "AMZN"
+      enabled: true
+
+    - symbol: "TSLA"      # Tesla
+      name: "Tesla Inc."
+      yahoo_symbol: "TSLA"
+      db_symbol: "TSLA"
+      enabled: false  # High volatility, disabled by default
+
+  # Crypto (if supported)
+  crypto:
+    - symbol: "BTC-USD"   # Bitcoin
+      name: "Bitcoin USD"
+      yahoo_symbol: "BTC-USD"
+      db_symbol: "BTC"
+      enabled: false  # Disabled by default
+
+    - symbol: "ETH-USD"   # Ethereum
+      name: "Ethereum USD"
+      yahoo_symbol: "ETH-USD"
+      db_symbol: "ETH"
+      enabled: false
+
+# Encoding Configuration
+encoding:
+  # How many days of data to fetch (for technical indicators)
+  days_back: 60
+
+  # How many recent days to process for embeddings
+  embedding_days: 30
+
+  # Batch size for processing
+  batch_size: 10
+
+  # Retry configuration
+  max_retries: 3
+  retry_delay_seconds: 5
+
+# Database Configuration
+database:
+  # PostgreSQL settings
+  postgres:
+    connection_timeout: 30
+    command_timeout: 60
+
+  # ChromaDB settings
+  chroma:
+    batch_size: 100
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

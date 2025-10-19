@@ -1,0 +1,89 @@
+# Docker Compose for local testing of Market Encoder
+version: '3.8'
+
+services:
+  # PostgreSQL for testing
+  postgres-test:
+    image: postgres:15
+    container_name: market-encoder-postgres-test
+    environment:
+      POSTGRES_DB: astrofinancial_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    ports:
+      - "5433:5432"  # Different port to avoid conflicts
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+      - ../sql/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d astrofinancial_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Market Encoder for testing
+  market-encoder-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.market-encoder
+    container_name: market-encoder-test
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    environment:
+      # Database connection
+      DB_HOST: postgres-test
+      DB_PORT: 5432
+      DB_NAME: astrofinancial_test
+      DB_USER: postgres
+      DB_PASSWORD: password
+
+      # ChromaDB configuration
+      CHROMA_DB_PATH: /data/chroma_market_db
+
+      # Application settings
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: 1
+      LOG_LEVEL: INFO
+    volumes:
+      - chroma_test_data:/data
+      - ./config:/app/config
+    command: ["python", "scripts/test_market_encoder.py"]
+
+  # Optional: Run daily encoding test
+  market-encoder-daily-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.market-encoder
+    container_name: market-encoder-daily-test
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    environment:
+      # Database connection
+      DB_HOST: postgres-test
+      DB_PORT: 5432
+      DB_NAME: astrofinancial_test
+      DB_USER: postgres
+      DB_PASSWORD: password
+
+      # ChromaDB configuration
+      CHROMA_DB_PATH: /data/chroma_market_db
+
+      # Application settings
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: 1
+      LOG_LEVEL: INFO
+    volumes:
+      - chroma_test_data:/data
+      - ./config:/app/config
+    command: ["python", "scripts/daily_market_encoding.py", "--categories", "indices", "--verbose"]
+    profiles:
+      - daily-test
+
+volumes:
+  postgres_test_data:
+    driver: local
+  chroma_test_data:
+    driver: local

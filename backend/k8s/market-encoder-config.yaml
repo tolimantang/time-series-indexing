@@ -1,0 +1,133 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: market-encoder-config
+  namespace: time-series-indexing
+  labels:
+    app: market-encoder
+    component: config
+data:
+  securities.yaml: |
+    # Market Encoder Securities Configuration
+    # Define which securities to fetch and encode daily
+
+    securities:
+      # Major Market Indices
+      indices:
+        - symbol: "^GSPC"     # S&P 500
+          name: "S&P 500 Index"
+          yahoo_symbol: "^GSPC"
+          db_symbol: "SPX"
+          enabled: true
+
+        - symbol: "^DJI"      # Dow Jones
+          name: "Dow Jones Industrial Average"
+          yahoo_symbol: "^DJI"
+          db_symbol: "DJI"
+          enabled: true
+
+        - symbol: "^IXIC"     # NASDAQ
+          name: "NASDAQ Composite"
+          yahoo_symbol: "^IXIC"
+          db_symbol: "IXIC"
+          enabled: true
+
+      # Major ETFs
+      etfs:
+        - symbol: "SPY"       # SPDR S&P 500
+          name: "SPDR S&P 500 ETF"
+          yahoo_symbol: "SPY"
+          db_symbol: "SPY"
+          enabled: true
+
+        - symbol: "QQQ"       # Invesco QQQ
+          name: "Invesco QQQ ETF"
+          yahoo_symbol: "QQQ"
+          db_symbol: "QQQ"
+          enabled: true
+
+      # Individual Stocks (Tech Giants)
+      stocks:
+        - symbol: "AAPL"      # Apple
+          name: "Apple Inc."
+          yahoo_symbol: "AAPL"
+          db_symbol: "AAPL"
+          enabled: true
+
+        - symbol: "MSFT"      # Microsoft
+          name: "Microsoft Corporation"
+          yahoo_symbol: "MSFT"
+          db_symbol: "MSFT"
+          enabled: true
+
+        - symbol: "GOOGL"     # Alphabet
+          name: "Alphabet Inc."
+          yahoo_symbol: "GOOGL"
+          db_symbol: "GOOGL"
+          enabled: true
+
+        - symbol: "AMZN"      # Amazon
+          name: "Amazon.com Inc."
+          yahoo_symbol: "AMZN"
+          db_symbol: "AMZN"
+          enabled: true
+
+      # Crypto (disabled by default)
+      crypto:
+        - symbol: "BTC-USD"   # Bitcoin
+          name: "Bitcoin USD"
+          yahoo_symbol: "BTC-USD"
+          db_symbol: "BTC"
+          enabled: false
+
+    # Encoding Configuration
+    encoding:
+      # How many days of data to fetch (for technical indicators)
+      days_back: 60
+
+      # How many recent days to process for embeddings
+      embedding_days: 30
+
+      # Batch size for processing
+      batch_size: 5
+
+      # Retry configuration
+      max_retries: 3
+      retry_delay_seconds: 5
+
+    # Database Configuration
+    database:
+      # PostgreSQL settings
+      postgres:
+        connection_timeout: 30
+        command_timeout: 60
+
+      # ChromaDB settings
+      chroma:
+        batch_size: 100
+
+    # Logging Configuration
+    logging:
+      level: "INFO"
+      format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: market-encoder-secrets
+  namespace: time-series-indexing
+  labels:
+    app: market-encoder
+    component: secrets
+type: Opaque
+stringData:
+  # PostgreSQL connection details
+  # IMPORTANT: Update these values for your environment
+  db-host: "your-postgres-host.region.rds.amazonaws.com"
+  db-name: "astrofinancial"
+  db-user: "encoder_user"
+  db-password: "your-secure-password"
+
+  # Optional: API keys for data sources
+  # alpha-vantage-key: "your-alpha-vantage-key"

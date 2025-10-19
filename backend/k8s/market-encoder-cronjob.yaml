@@ -7,7 +7,7 @@ metadata:
     app: market-encoder
     component: scheduler
 spec:
-  # Run daily at 6:30 AM UTC (after markets close)
+  # Run daily at 6:30 AM UTC (after US markets close)
   schedule: "30 6 * * 1-5"  # Weekdays only
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
@@ -26,28 +26,61 @@ spec:
             imagePullPolicy: Always
             command:
             - python
-            - scripts/run_market_encoder.py
-            - update
+            - scripts/daily_market_encoding.py
+            - --verbose
             env:
+            # Database connection
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-host
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-name
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-user
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-password
+            # ChromaDB configuration
             - name: CHROMA_DB_PATH
-              value: "/app/data/chroma_db"
+              value: "/data/chroma_market_db"
+            # Application settings
             - name: PYTHONPATH
               value: "/app"
+            - name: PYTHONUNBUFFERED
+              value: "1"
             - name: LOG_LEVEL
               value: "INFO"
             resources:
               requests:
-                memory: "512Mi"
-                cpu: "250m"
+                memory: "1Gi"
+                cpu: "500m"
               limits:
-                memory: "2Gi"
-                cpu: "1000m"
+                memory: "4Gi"
+                cpu: "2000m"
             volumeMounts:
             - name: chroma-data
-              mountPath: /app/data
+              mountPath: /data
+            - name: config-volume
+              mountPath: /app/config
+              readOnly: true
           volumes:
           - name: chroma-data
             persistentVolumeClaim:
               claimName: market-encoder-pvc
+          - name: config-volume
+            configMap:
+              name: market-encoder-config
           restartPolicy: OnFailure
           backoffLimit: 3
