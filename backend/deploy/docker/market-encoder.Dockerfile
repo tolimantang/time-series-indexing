@@ -24,28 +24,24 @@ RUN pip install --no-cache-dir \
     sentence-transformers \
     chromadb
 
-# Copy application code
-COPY market_encoder/ ./market_encoder/
+# Copy application code with new src/ layout
+COPY src/ ./src/
 COPY config/ ./config/
 COPY scripts/ ./scripts/
 COPY sql/ ./sql/
 
-# Create data directory for ChromaDB
-RUN mkdir -p /data/chroma_market_db
-
-# Set environment variables
+# Set environment variables (no ChromaDB needed for simple version)
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
-ENV CHROMA_DB_PATH=/data/chroma_market_db
 
 # Create non-root user for security
 RUN groupadd -r encoder && useradd -r -g encoder encoder
-RUN chown -R encoder:encoder /app /data
+RUN chown -R encoder:encoder /app
 USER encoder
 
-# Health check
+# Health check - updated for new src/ layout
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "from market_encoder.config import MarketEncoderConfig; MarketEncoderConfig()" || exit 1
+    CMD python -c "from src.market_encoder.config.config import MarketEncoderConfig; MarketEncoderConfig()" || exit 1
 
-# Default command for daily cronjob
-CMD ["python", "scripts/daily_market_encoding.py"]
+# Default command for simple daily cronjob
+CMD ["python", "scripts/simple_daily_encoding.py", "--config", "/app/config/securities_simple.yaml"]
