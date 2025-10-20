@@ -1,0 +1,1 @@
+# Market data encoder for AstroFinancial system

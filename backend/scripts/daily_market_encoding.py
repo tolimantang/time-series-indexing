@@ -15,8 +15,8 @@ from pathlib import Path
 # Add the parent directory to the Python path for imports
 sys.path.append(str(Path(__file__).parent.parent))
 
-from market_encoder.multi_encoder import MultiSecurityEncoder
-from market_encoder.config import MarketEncoderConfig
+from src.market_encoder.core.multi_encoder import MultiSecurityEncoder
+from src.market_encoder.config.config import MarketEncoderConfig
 
 
 def setup_environment():

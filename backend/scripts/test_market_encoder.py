@@ -13,7 +13,7 @@ from datetime import datetime
 # Add the parent directory to the Python path for imports
 sys.path.append(str(Path(__file__).parent.parent))
 
-from market_encoder.multi_encoder import MultiSecurityEncoder
+from src.market_encoder.core.multi_encoder import MultiSecurityEncoder
 
 
 def setup_test_environment():

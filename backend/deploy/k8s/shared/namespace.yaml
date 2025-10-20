@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: time-series-indexing
+  labels:
+    name: time-series-indexing
+    app.kubernetes.io/name: time-series-indexing
+    app.kubernetes.io/component: infrastructure
