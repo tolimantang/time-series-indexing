@@ -11,7 +11,7 @@ from typing import Dict, List, Any
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .encoder import MarketEncoder
+from .postgres_encoder import PostgresOnlyEncoder
 from ..config.config import MarketEncoderConfig, SecurityConfig
 
 logger = logging.getLogger(__name__)
@@ -29,11 +29,8 @@ class SimpleDailyEncoder:
         self.config = MarketEncoderConfig(config_path)
         self.config.setup_logging()
 
-        # Initialize base encoder (PostgreSQL only)
-        self.encoder = MarketEncoder(
-            chroma_db_path=None,  # Skip ChromaDB for simple version
-            db_config=db_config
-        )
+        # Initialize minimal PostgreSQL-only encoder
+        self.encoder = PostgresOnlyEncoder(db_config=db_config)
 
         # Processing settings from config
         self.batch_size = self.config.get_encoding_setting('batch_size', 10)

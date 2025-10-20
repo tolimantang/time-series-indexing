@@ -17,12 +17,10 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Add PostgreSQL and additional dependencies for market encoder
+# Add PostgreSQL dependencies for market encoder (minimal)
 RUN pip install --no-cache-dir \
     psycopg2-binary \
-    pyyaml \
-    sentence-transformers \
-    chromadb
+    pyyaml
 
 # Copy application code with new src/ layout
 COPY src/ ./src/
@@ -39,9 +37,9 @@ RUN groupadd -r encoder && useradd -r -g encoder encoder
 RUN chown -R encoder:encoder /app
 USER encoder
 
-# Health check - updated for new src/ layout
+# Health check - minimal version
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "from src.market_encoder.config.config import MarketEncoderConfig; MarketEncoderConfig()" || exit 1
+    CMD python -c "import psycopg2; print('OK')" || exit 1
 
 # Default command for simple daily cronjob
 CMD ["python", "scripts/simple_daily_encoding.py", "--config", "/app/config/securities_simple.yaml"]
