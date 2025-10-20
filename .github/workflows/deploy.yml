@@ -57,6 +57,17 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY-indexer:$IMAGE_TAG
           echo "indexer-image=$ECR_REGISTRY/$ECR_REPOSITORY-indexer:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
+      - name: Build, tag, and push market encoder image to Amazon ECR
+        id: build-market-encoder-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Build market encoder image
+          docker build -f backend/Dockerfile.market-encoder -t $ECR_REGISTRY/$ECR_REPOSITORY-market-encoder:$IMAGE_TAG backend/
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY-market-encoder:$IMAGE_TAG
+          echo "market-encoder-image=$ECR_REGISTRY/$ECR_REPOSITORY-market-encoder:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
       - name: Update kube config
         run: aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION
 
@@ -64,6 +75,12 @@ jobs:
         env:
           API_IMAGE: ${{ steps.build-api-image.outputs.api-image }}
           INDEXER_IMAGE: ${{ steps.build-indexer-image.outputs.indexer-image }}
+          MARKET_ENCODER_IMAGE: ${{ steps.build-market-encoder-image.outputs.market-encoder-image }}
+          # Database secrets
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: |
           # Create namespace if it doesn't exist
           kubectl apply -f deploy/k8s/namespace.yaml
@@ -85,6 +102,21 @@ jobs:
           # Deploy ingress
           kubectl apply -f deploy/k8s/ingress.yaml
 
+          # Create market encoder secrets
+          kubectl create secret generic market-encoder-secrets \
+            --from-literal=db-host="$DB_HOST" \
+            --from-literal=db-name="$DB_NAME" \
+            --from-literal=db-user="$DB_USER" \
+            --from-literal=db-password="$DB_PASSWORD" \
+            --namespace=time-series-indexing \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # Update market encoder image tag
+          sed -i "s|market-encoder:latest|$MARKET_ENCODER_IMAGE|g" backend/k8s/simple-market-encoder-cronjob.yaml
+
+          # Deploy market encoder
+          kubectl apply -f backend/k8s/simple-market-encoder-cronjob.yaml
+
           # Wait for deployment
           kubectl rollout status deployment/astro-api -n astro-financial --timeout=300s
 
@@ -93,6 +125,10 @@ jobs:
           kubectl get pods -n astro-financial
           kubectl get services -n astro-financial
           kubectl get ingress -n astro-financial
+
+          # Verify market encoder
+          kubectl get cronjobs -n time-series-indexing
+          kubectl get pvc -n time-series-indexing
 
       - name: Run database migrations
         run: |
@@ -119,6 +155,24 @@ jobs:
 
           asyncio.run(run_migrations())
           "
+
+      - name: Test market encoder manually
+        run: |
+          # Run market encoder migrations
+          python sql/scripts/run_migration.py run || echo "Migrations may already be applied"
+
+          # Create a test job from the market encoder cronjob
+          kubectl create job --from=cronjob/simple-market-encoder-daily deploy-test-$(date +%Y%m%d-%H%M) -n time-series-indexing
+
+          # Wait for the job to start
+          sleep 10
+
+          # Check job status
+          kubectl get jobs -n time-series-indexing
+          kubectl describe job deploy-test-$(date +%Y%m%d-%H%M) -n time-series-indexing
+
+          # Show logs (timeout after 2 minutes)
+          timeout 120 kubectl logs -l app=simple-market-encoder -n time-series-indexing -f || echo "Job is still running..."
 
   notify:
     name: Notify Deployment Status

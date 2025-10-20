@@ -1,0 +1,118 @@
+# Simple Market Encoder Securities Configuration
+# Simplified configuration for daily cronjob without technical indicators
+
+securities:
+  # Major Market Indices
+  indices:
+    - symbol: "^GSPC"     # S&P 500
+      name: "S&P 500 Index"
+      yahoo_symbol: "^GSPC"
+      db_symbol: "SPX"
+      enabled: true
+
+    - symbol: "^DJI"      # Dow Jones
+      name: "Dow Jones Industrial Average"
+      yahoo_symbol: "^DJI"
+      db_symbol: "DJI"
+      enabled: true
+
+    - symbol: "^IXIC"     # NASDAQ
+      name: "NASDAQ Composite"
+      yahoo_symbol: "^IXIC"
+      db_symbol: "IXIC"
+      enabled: true
+
+  # Major ETFs
+  etfs:
+    - symbol: "SPY"       # SPDR S&P 500
+      name: "SPDR S&P 500 ETF"
+      yahoo_symbol: "SPY"
+      db_symbol: "SPY"
+      enabled: true
+
+    - symbol: "QQQ"       # Invesco QQQ
+      name: "Invesco QQQ ETF"
+      yahoo_symbol: "QQQ"
+      db_symbol: "QQQ"
+      enabled: true
+
+  # Individual Stocks (Top 10 by market cap)
+  stocks:
+    - symbol: "AAPL"      # Apple
+      name: "Apple Inc."
+      yahoo_symbol: "AAPL"
+      db_symbol: "AAPL"
+      enabled: true
+
+    - symbol: "MSFT"      # Microsoft
+      name: "Microsoft Corporation"
+      yahoo_symbol: "MSFT"
+      db_symbol: "MSFT"
+      enabled: true
+
+    - symbol: "GOOGL"     # Alphabet
+      name: "Alphabet Inc."
+      yahoo_symbol: "GOOGL"
+      db_symbol: "GOOGL"
+      enabled: true
+
+    - symbol: "AMZN"      # Amazon
+      name: "Amazon.com Inc."
+      yahoo_symbol: "AMZN"
+      db_symbol: "AMZN"
+      enabled: true
+
+    - symbol: "NVDA"      # NVIDIA
+      name: "NVIDIA Corporation"
+      yahoo_symbol: "NVDA"
+      db_symbol: "NVDA"
+      enabled: true
+
+    - symbol: "TSLA"      # Tesla
+      name: "Tesla Inc."
+      yahoo_symbol: "TSLA"
+      db_symbol: "TSLA"
+      enabled: true
+
+    - symbol: "META"      # Meta
+      name: "Meta Platforms Inc."
+      yahoo_symbol: "META"
+      db_symbol: "META"
+      enabled: true
+
+  # Crypto (disabled by default)
+  crypto:
+    - symbol: "BTC-USD"   # Bitcoin
+      name: "Bitcoin USD"
+      yahoo_symbol: "BTC-USD"
+      db_symbol: "BTC"
+      enabled: false
+
+# Simplified Encoding Configuration
+encoding:
+  # No need for many days since we're not calculating technical indicators
+  days_back: 2  # Just need today and yesterday for daily return
+
+  # No embeddings for historical days, just today
+  embedding_days: 1
+
+  # Can process more securities in parallel since it's simpler
+  batch_size: 10
+
+  # Retry configuration
+  max_retries: 3
+  retry_delay_seconds: 3
+
+# Database Configuration
+database:
+  postgres:
+    connection_timeout: 15  # Faster timeout since we're doing less
+    command_timeout: 30
+
+  chroma:
+    batch_size: 50  # Smaller batches since we're doing less per security
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
