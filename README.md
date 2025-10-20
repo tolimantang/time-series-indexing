@@ -1,164 +1,151 @@
-# Time Series Indexing for RAG
+# Time Series Indexing
 
-A Python library for building semantic similarity indexes on time series data, enabling retrieval-augmented generation (RAG) applications for financial and temporal data analysis.
+A full-stack system for indexing and analyzing financial time series data with semantic search capabilities.
 
-## Overview
-
-This library helps you:
-- Segment time series data into meaningful windows
-- Extract features and create embeddings from time series segments
-- Build vector indexes for fast similarity search
-- Query for historically similar market conditions or temporal patterns
-
-## Installation
-
-```bash
-# Clone the repository
-git clone <repository-url>
-cd time-series-indexing
-
-# Install in development mode
-pip install -e .
-
-# Or install dependencies directly
-pip install -r requirements.txt
-```
-
-## Quick Start
-
-```python
-from tsindexing import TimeSeriesLoader, FeatureEncoder, IndexBuilder, IndexQuery
-from tsindexing.data.segmentation import TimeSeriesSegmenter
-
-# 1. Load and segment your time series data
-loader = TimeSeriesLoader()
-df = loader.load_csv("your_data.csv", date_column="date")
-
-segmenter = TimeSeriesSegmenter(window_size=64, stride=8)
-segments = segmenter.create_segments_with_features(
-    df, value_columns=["price", "volume"]
-)
-
-# 2. Create embeddings
-encoder = FeatureEncoder(use_fft=True, use_statistical=True)
-embeddings = encoder.fit_transform(segments)
-
-# 3. Build vector index
-builder = IndexBuilder(collection_name="my_timeseries")
-builder.build_from_data(segments, embeddings)
-
-# 4. Query for similar patterns
-query_interface = IndexQuery(collection_name="my_timeseries")
-similar = query_interface.find_similar_contexts(
-    current_segment=segments[-1],  # Use latest segment as query
-    encoder=encoder,
-    top_k=5
-)
-```
-
-## Core Components
-
-### Data Loading & Segmentation
-- **TimeSeriesLoader**: Load CSV data and handle datetime indexing
-- **TimeSeriesSegmenter**: Create overlapping windows with feature extraction
-
-### Embedding Generation
-- **FeatureEncoder**: Extract statistical, FFT, and technical features
-- Support for PCA dimensionality reduction and normalization
-
-### Vector Indexing
-- **IndexBuilder**: Build Qdrant vector database collections
-- **IndexQuery**: Query interface for similarity search with metadata filtering
-
-## Architecture
+## 🏗️ Project Structure
 
 ```
 time-series-indexing/
-├── src/tsindexing/
-│   ├── data/           # Data loading and segmentation
-│   ├── embeddings/     # Feature extraction and encoding
-│   ├── index/          # Vector database operations
-│   └── llm/            # LLM integration utilities
-├── examples/           # Usage examples
-└── tests/             # Test suite
+├── backend/              # Python backend services
+│   ├── src/              # Python packages
+│   ├── deploy/           # Kubernetes & Docker configs
+│   ├── scripts/          # CLI tools
+│   ├── config/           # Configuration files
+│   └── sql/              # Database migrations
+├── frontend/             # React/TypeScript frontend
+├── terraform/            # Infrastructure as code
+├── docs/                 # Project documentation
+├── old-files/            # Archived experimental code
+├── docker-compose.yml    # Local development
+└── pyproject.toml        # Root Python configuration
 ```
 
-## Example Use Cases
+## 🚀 Quick Start
 
-1. **Financial Market Analysis**: Find historical periods with similar market conditions
-2. **Anomaly Detection**: Identify unusual patterns by comparing to historical segments
-3. **Forecasting Context**: Retrieve similar past scenarios for context-aware predictions
-4. **Regime Detection**: Cluster and classify different market regimes or operational states
+### Prerequisites
+- Python 3.10+
+- Node.js 18+
+- Docker & Docker Compose
+- kubectl (for deployment)
 
-## Features
-
-- **Multiple Embedding Strategies**: Statistical features, FFT components, technical indicators
-- **Flexible Segmentation**: Configurable window sizes and overlap strategies
-- **Metadata Filtering**: Filter searches by symbol, date range, or custom attributes
-- **Scalable Storage**: Built on Qdrant vector database for production use
-- **Easy Integration**: Simple API for embedding in larger RAG pipelines
-
-## Sample Data & Examples
-
-The project includes sample CSV files in the `data/` directory:
-
-- **`sample_yahoo_finance.csv`**: Real AAPL data in Yahoo Finance format
-- **`sample_multi_asset.csv`**: Multi-stock data (AAPL, GOOGL, MSFT)
-
-### Running Examples
+### Local Development
 
 ```bash
-# Basic synthetic data example
-python examples/basic_usage.py
+# Backend
+cd backend
+pip install -e .
+market-encoder-simple --config config/securities_simple.yaml
 
-# Test with sample CSV files
-python examples/test_with_sample_data.py
+# Frontend
+cd frontend
+npm install
+npm run dev
 
-# Yahoo Finance compatibility demo
-python examples/yahoo_finance_example.py
+# Full stack with Docker
+docker-compose up
 ```
 
-### Real Data Sources
+## 📚 Documentation
 
-The TimeSeriesLoader is compatible with:
+See the [`docs/`](./docs/) directory for detailed documentation:
 
-- **Yahoo Finance**: Download any stock CSV from finance.yahoo.com
-- **yfinance**: `pip install yfinance` for programmatic downloads
-- **Alpha Vantage**: Export CSV from alphavantage.co
-- **Quandl/NASDAQ**: Any standard OHLCV format
-- **Custom datasets**: Any CSV with date + numeric columns
+- **[Product Architecture](./docs/product_architecture.md)** - System overview
+- **[Backend README](./backend/README.md)** - Backend service details
+- **[Codebase Analysis](./docs/CODEBASE_ANALYSIS.md)** - Code structure analysis
+- **[Data Sources](./docs/DATA_SOURCES.md)** - Data integration details
 
-```python
-# Example with real Yahoo Finance CSV
-loader = TimeSeriesLoader()
-df = loader.load_csv("AAPL.csv", date_column="Date")
-segments = loader.create_segments(df, window_size=30, stride=5)
+## 🏛️ Architecture
+
+### Backend Services
+- **Market Encoder**: Fetches and encodes financial market data
+- **Astro Encoder**: Astronomical data correlation (planned)
+- **API Server**: REST API for frontend integration
+- **Indexer**: Vector database management
+
+### Data Storage
+- **PostgreSQL**: Structured financial data
+- **ChromaDB**: Vector embeddings for semantic search
+- **Time-series optimization**: Fast queries for P&L calculations
+
+### Frontend
+- **React/TypeScript**: Modern web interface
+- **Semantic Search**: Natural language market queries
+- **Real-time Updates**: Live market data integration
+
+## 🚀 Deployment
+
+### Local Development
+```bash
+docker-compose up
 ```
 
-## Requirements
+### Kubernetes (EKS)
+```bash
+# Deploy infrastructure
+kubectl apply -f backend/deploy/k8s/shared/
 
-- Python 3.9+
-- pandas, numpy, scipy, scikit-learn
-- qdrant-client for vector storage
-- pydantic for data validation
+# Deploy services
+kubectl apply -f backend/deploy/k8s/market-encoder/
+```
 
-## Development
+### Infrastructure
+```bash
+cd terraform
+terraform init
+terraform plan
+terraform apply
+```
+
+## 🧪 Testing
 
 ```bash
-# Install development dependencies
-pip install -e ".[dev]"
-
-# Run tests
+# Backend tests
+cd backend
 pytest
 
-# Format code
-black src/ examples/
-isort src/ examples/
+# Frontend tests
+cd frontend
+npm test
 
-# Type checking
-mypy src/
+# End-to-end
+npm run test:e2e
 ```
 
-## License
+## 📊 Features
+
+- **📈 Market Data Encoding**: Real-time financial data processing
+- **🔍 Semantic Search**: Natural language queries for market analysis
+- **📊 P&L Calculations**: Hypothetical profit/loss analysis
+- **⚡ Fast Queries**: Optimized time-series data retrieval
+- **🤖 Technical Indicators**: RSI, moving averages, Bollinger Bands
+- **🌟 Market Narratives**: AI-generated market condition descriptions
+
+## 🛠️ Development
+
+### Adding New Features
+1. Backend changes go in `backend/src/`
+2. Frontend changes go in `frontend/src/`
+3. Database changes go in `backend/sql/migrations/`
+4. Infrastructure changes go in `terraform/`
+
+### Code Organization
+- **Monorepo**: All services in one repository
+- **Clean Architecture**: Separated concerns and dependencies
+- **Modern Tooling**: pyproject.toml, TypeScript, pytest
+- **Docker**: Containerized development and deployment
+
+## 📝 License
 
 MIT License - see LICENSE file for details.
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests
+5. Submit a pull request
+
+---
+
+For detailed setup instructions, see the respective README files in `backend/` and `frontend/` directories.
