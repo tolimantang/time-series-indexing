@@ -22,17 +22,16 @@ class SimpleDailyEncoder:
 
     def __init__(self,
                  config_path: str = None,
-                 chroma_db_path: str = None,
                  db_config: Dict[str, str] = None):
-        """Initialize simple daily encoder."""
+        """Initialize simple daily encoder (PostgreSQL only)."""
 
         # Load configuration
         self.config = MarketEncoderConfig(config_path)
         self.config.setup_logging()
 
-        # Initialize base encoder
+        # Initialize base encoder (PostgreSQL only)
         self.encoder = MarketEncoder(
-            chroma_db_path=chroma_db_path,
+            chroma_db_path=None,  # Skip ChromaDB for simple version
             db_config=db_config
         )
 
@@ -51,7 +50,6 @@ class SimpleDailyEncoder:
             'success': False,
             'error': None,
             'postgres_records': 0,
-            'chroma_records': 0,
             'processing_time': 0
         }
 
@@ -83,22 +81,15 @@ class SimpleDailyEncoder:
                     # First day of data, no return calculation possible
                     latest_data.loc[latest_data.index[0], 'daily_return'] = 0.0
 
-                # Store in PostgreSQL
+                # Store in PostgreSQL only
                 self.encoder.store_market_data_postgres(security.db_symbol, latest_data)
                 result['postgres_records'] = len(latest_data)
-
-                # Create simple narrative and embedding
-                processed_data = self._create_simple_embedding(security, latest_data)
-                if processed_data:
-                    self.encoder.store_embeddings([processed_data])
-                    result['chroma_records'] = 1
 
                 result['success'] = True
                 result['processing_time'] = time.time() - start_time
 
                 logger.info(f"✅ Successfully processed {security.symbol}: "
-                          f"{result['postgres_records']} DB records, "
-                          f"{result['chroma_records']} embeddings")
+                          f"{result['postgres_records']} DB records")
                 break
 
             except Exception as e:
@@ -114,47 +105,6 @@ class SimpleDailyEncoder:
 
         result['processing_time'] = time.time() - start_time
         return result
-
-    def _create_simple_embedding(self, security: SecurityConfig, data: pd.DataFrame) -> Dict[str, Any]:
-        """Create simple embedding without technical indicators."""
-        try:
-            row = data.iloc[0]
-            date = data.index[0]
-
-            # Simple price data only
-            daily_signals = {
-                'symbol': security.db_symbol,
-                'name': security.name,
-                'date': date.strftime('%Y-%m-%d'),
-                'price': {
-                    'open': float(row.get('open', row['close'])),
-                    'high': float(row.get('high', row['close'])),
-                    'low': float(row.get('low', row['close'])),
-                    'close': float(row['close']),
-                    'volume': int(row.get('volume', 0)),
-                    'daily_return': float(row.get('daily_return', 0)) * 100,  # Convert to percentage
-                }
-            }
-
-            # Create simple narrative
-            price_change = daily_signals['price']['daily_return']
-            direction = "gained" if price_change > 0 else "lost" if price_change < 0 else "remained flat"
-
-            narrative = f"{security.name} ({security.db_symbol}) closed at ${daily_signals['price']['close']:.2f} " \
-                       f"on {daily_signals['date']}, having {direction} {abs(price_change):.2f}% for the day. " \
-                       f"The stock traded between ${daily_signals['price']['low']:.2f} and " \
-                       f"${daily_signals['price']['high']:.2f} with volume of {daily_signals['price']['volume']:,} shares."
-
-            return {
-                'date': date.strftime('%Y-%m-%d'),
-                'signals': daily_signals,
-                'narrative': narrative,
-                'symbol': security.db_symbol
-            }
-
-        except Exception as e:
-            logger.warning(f"Error creating embedding for {security.symbol}: {e}")
-            return None
 
     def run_daily_simple_encoding(self, categories: List[str] = None) -> Dict[str, Any]:
         """Run simplified daily encoding for all enabled securities."""
@@ -211,7 +161,6 @@ class SimpleDailyEncoder:
 
         # Calculate totals
         total_postgres_records = sum(r['postgres_records'] for r in results)
-        total_chroma_records = sum(r['chroma_records'] for r in results)
         total_time = time.time() - start_time
 
         # Prepare summary
@@ -225,16 +174,14 @@ class SimpleDailyEncoder:
                 'failed': failed
             },
             'data_stored': {
-                'postgres_records': total_postgres_records,
-                'chroma_records': total_chroma_records
+                'postgres_records': total_postgres_records
             },
             'results': results
         }
 
         # Log summary
         logger.info(f"✅ Simple daily encoding completed: {successful}/{len(enabled_securities)} successful, "
-                   f"{total_postgres_records} DB records, {total_chroma_records} embeddings, "
-                   f"{total_time:.1f}s")
+                   f"{total_postgres_records} DB records, {total_time:.1f}s")
 
         if failed > 0:
             failed_symbols = [r['security'] for r in results if not r['success']]

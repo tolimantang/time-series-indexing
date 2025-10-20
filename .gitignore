@@ -37,6 +37,9 @@ Thumbs.db
 .env.local
 .env.production
 
+# Kubernetes secrets with real passwords
+backend/deploy/k8s/market-encoder/market-encoder-secrets.yaml
+
 # Logs
 *.log
 logs/

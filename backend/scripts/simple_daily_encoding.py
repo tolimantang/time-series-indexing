@@ -30,7 +30,7 @@ def setup_environment():
         sys.exit(1)
 
     os.environ.setdefault('DB_PORT', '5432')
-    os.environ.setdefault('CHROMA_DB_PATH', '/data/chroma_market_db')
+    # No ChromaDB needed for simple version
 
 
 def create_db_config():
@@ -85,13 +85,11 @@ def main():
         db_config = create_db_config()
         logger.info(f"Database: {db_config['host']}:{db_config['port']}/{db_config['database']}")
 
-        # Initialize simple encoder
-        chroma_path = os.getenv('CHROMA_DB_PATH', '/data/chroma_market_db')
-        logger.info(f"ChromaDB path: {chroma_path}")
+        # Initialize simple encoder (PostgreSQL only)
+        logger.info("Initializing simple encoder (PostgreSQL only)")
 
         encoder = SimpleDailyEncoder(
             config_path=args.config,
-            chroma_db_path=chroma_path,
             db_config=db_config
         )
 

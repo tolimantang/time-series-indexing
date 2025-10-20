@@ -22,7 +22,7 @@ spec:
         spec:
           containers:
           - name: simple-market-encoder-daily
-            image: market-encoder:latest
+            image: 928440193005.dkr.ecr.us-west-1.amazonaws.com/market-encoder:latest
             imagePullPolicy: Always
             command:
             - python
@@ -54,9 +54,7 @@ spec:
                 secretKeyRef:
                   name: market-encoder-secrets
                   key: db-password
-            # ChromaDB configuration
-            - name: CHROMA_DB_PATH
-              value: "/data/chroma_market_db"
+            # PostgreSQL only - no ChromaDB needed
             # Application settings
             - name: PYTHONPATH
               value: "/app"
@@ -72,19 +70,23 @@ spec:
                 memory: "1Gi"    # Much lower limits
                 cpu: "500m"
             volumeMounts:
-            - name: chroma-data
-              mountPath: /data
+            # - name: chroma-data  # Commented out - no ChromaDB needed
+            #   mountPath: /data
             - name: config-volume
               mountPath: /app/config
               readOnly: true
           volumes:
-          - name: chroma-data
-            persistentVolumeClaim:
-              claimName: market-encoder-pvc
+          # - name: chroma-data  # Commented out - no PVC needed
+          #   persistentVolumeClaim:
+          #     claimName: market-encoder-pvc
           - name: config-volume
             configMap:
               name: simple-market-encoder-config
           restartPolicy: OnFailure
+          tolerations:
+          - key: "CriticalAddonsOnly"
+            operator: "Exists"
+            effect: "NoSchedule"
       backoffLimit: 2  # Lower since it's simpler
 
 ---
