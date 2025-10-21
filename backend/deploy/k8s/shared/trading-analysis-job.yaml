@@ -456,12 +456,14 @@ spec:
                       positions = []
                       if config['position_types']['analyze_long']:
                           long_profit = ((exit_price - entry_price) / entry_price) * 100
-                          if long_profit > 0:
+                          # Filter out extreme gains (likely from negative prices or data errors)
+                          if 0 < long_profit <= 500:  # Cap at 500% to filter extreme movements
                               positions.append(('long', long_profit))
 
                       if config['position_types']['analyze_short']:
                           short_profit = ((entry_price - exit_price) / entry_price) * 100
-                          if short_profit > 0:
+                          # Filter out extreme gains (likely from negative prices or data errors)
+                          if 0 < short_profit <= 500:  # Cap at 500% to filter extreme movements
                               positions.append(('short', short_profit))
 
                       for position_type, profit in positions:
@@ -492,7 +494,47 @@ spec:
 
               # Sort by score
               opportunities.sort(key=lambda x: x.trade_score, reverse=True)
-              return opportunities
+
+              # Filter to non-overlapping opportunities
+              non_overlapping = select_non_overlapping_opportunities(opportunities)
+              logger.info(f"Filtered to {len(non_overlapping)} non-overlapping opportunities for {symbol}")
+
+              return non_overlapping
+
+          def select_non_overlapping_opportunities(opportunities: List[TradingOpportunity]) -> List[TradingOpportunity]:
+              """
+              Select non-overlapping trading opportunities to avoid clustering around same events.
+              Returns the highest-scoring opportunities that don't overlap in time.
+              """
+              if not opportunities:
+                  return []
+
+              selected = []
+              used_dates = set()
+
+              for opp in opportunities:
+                  # Check if this opportunity overlaps with any already selected
+                  entry_date = opp.entry_date.date() if hasattr(opp.entry_date, 'date') else opp.entry_date
+                  exit_date = opp.exit_date.date() if hasattr(opp.exit_date, 'date') else opp.exit_date
+
+                  # Create range of dates for this opportunity
+                  current_dates = set()
+                  from datetime import timedelta
+                  current_date = entry_date
+                  while current_date <= exit_date:
+                      current_dates.add(current_date)
+                      current_date += timedelta(days=1)
+
+                  # Check for overlap with already selected opportunities
+                  if not current_dates.intersection(used_dates):
+                      selected.append(opp)
+                      used_dates.update(current_dates)
+
+                      # Stop when we have enough non-overlapping opportunities
+                      if len(selected) >= 100:  # Get more than needed, will be trimmed later
+                          break
+
+              return selected
 
           def calculate_max_retreat_from_gains(trade_data: pd.DataFrame, entry_price: float, position_type: str) -> float:
               """
@@ -559,16 +601,26 @@ spec:
 
                       if top_opportunities:
                           # Print summary
-                          print(f"\n🎯 Top {len(top_opportunities)} Trading Opportunities for {symbol}")
+                          print(f"\n🎯 Top {len(top_opportunities)} NON-OVERLAPPING Trading Opportunities for {symbol}")
                           print("="*80)
 
                           avg_profit = sum(opp.profit_percent for opp in top_opportunities) / len(top_opportunities)
                           avg_days = sum(opp.holding_days for opp in top_opportunities) / len(top_opportunities)
 
+                          # Count position types
+                          long_count = sum(1 for opp in top_opportunities if opp.position_type == 'long')
+                          short_count = sum(1 for opp in top_opportunities if opp.position_type == 'short')
+
+                          # Get date range
+                          earliest = min(opp.entry_date for opp in top_opportunities)
+                          latest = max(opp.exit_date for opp in top_opportunities)
+
+                          print(f"Total Opportunities: {len(top_opportunities)} (Long: {long_count}, Short: {short_count})")
+                          print(f"Date Range: {earliest.strftime('%Y-%m-%d')} to {latest.strftime('%Y-%m-%d')}")
                           print(f"Average Profit: {avg_profit:.2f}%")
                           print(f"Average Holding: {avg_days:.1f} days")
                           print(f"Best Trade: {top_opportunities[0].profit_percent:.2f}% in {top_opportunities[0].holding_days} days")
-                          print("\nTop 10 Trades:")
+                          print("\nTop 10 Non-Overlapping Trades:")
                           print("-" * 80)
 
                           for i, opp in enumerate(top_opportunities[:10], 1):
