@@ -1,0 +1,431 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: astro-trading-analysis
+  namespace: time-series-indexing
+  labels:
+    app: astro-trading-analysis
+    component: astrological-correlation
+    type: market-analysis
+spec:
+  # Keep job for 48 hours after completion for result review
+  ttlSecondsAfterFinished: 172800
+  template:
+    metadata:
+      labels:
+        app: astro-trading-analysis
+        component: astrological-correlation
+    spec:
+      containers:
+      - name: astro-trading-analyzer
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "🌟 Starting Astrological Trading Correlation Analysis"
+          echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          # Install system dependencies
+          apt-get update && apt-get install -y \
+            libpq-dev \
+            gcc \
+            curl \
+            wget \
+            && rm -rf /var/lib/apt/lists/*
+
+          # Install Python dependencies
+          pip install --no-cache-dir \
+            psycopg2-binary \
+            pandas \
+            numpy \
+            pyyaml \
+            pyswisseph
+
+          # Create working directory structure
+          mkdir -p /app/backend/{src/astro_encoder/{core,models,utils},scripts/astro}
+          cd /app/backend
+
+          # Create the astro encoder system
+          echo "📁 Setting up astrological encoder system..."
+
+          # Create __init__ files
+          cat > src/astro_encoder/__init__.py << 'EOF'
+          """Astrological Data Encoder"""
+          __version__ = "1.0.0"
+          EOF
+
+          cat > src/astro_encoder/models/__init__.py << 'EOF'
+          """Data models for astrological calculations."""
+          EOF
+
+          cat > src/astro_encoder/core/__init__.py << 'EOF'
+          """Core astrological encoding functionality."""
+          EOF
+
+          cat > src/astro_encoder/utils/__init__.py << 'EOF'
+          """Utility functions for astrological calculations."""
+          EOF
+
+          # Create data models
+          cat > src/astro_encoder/models/data_models.py << 'EOF'
+          from dataclasses import dataclass
+          from typing import List, Dict, Optional
+          from datetime import datetime
+
+          @dataclass
+          class PlanetaryPosition:
+              planet: str
+              longitude: float
+              latitude: float
+              distance: float
+              speed: float
+              sign: str
+              degree_in_sign: float
+              degree_classification: str
+              house: Optional[int] = None
+
+          @dataclass
+          class Aspect:
+              planet1: str
+              planet2: str
+              aspect_type: str
+              orb: float
+              exactness: float
+              angle: float
+              applying_separating: str
+
+          @dataclass
+          class HouseData:
+              system: str
+              location: str
+              latitude: float
+              longitude: float
+              house_cusps: List[float]
+              ascendant: float
+              midheaven: float
+              planetary_houses: Dict[str, int]
+
+          @dataclass
+          class AstronomicalData:
+              date: datetime
+              julian_day: float
+              location: str
+              positions: Dict[str, PlanetaryPosition]
+              aspects: List[Aspect]
+              houses: Optional[HouseData] = None
+              lunar_phase: Optional[float] = None
+              significant_events: List[str] = None
+
+              def __post_init__(self):
+                  if self.significant_events is None:
+                      self.significant_events = []
+          EOF
+
+          # Create utilities
+          cat > src/astro_encoder/utils/utils.py << 'EOF'
+          import math
+          from typing import Tuple
+
+          def normalize_angle(angle: float) -> float:
+              """Normalize angle to 0-360 range."""
+              return angle % 360
+
+          def degrees_to_sign(longitude: float) -> Tuple[str, float, str]:
+              """Convert longitude to zodiac sign."""
+              zodiac_signs = [
+                  'aries', 'taurus', 'gemini', 'cancer', 'leo', 'virgo',
+                  'libra', 'scorpio', 'sagittarius', 'capricorn', 'aquarius', 'pisces'
+              ]
+
+              longitude = normalize_angle(longitude)
+              sign_index = int(longitude // 30)
+              degree_in_sign = longitude % 30
+
+              if degree_in_sign < 10:
+                  classification = 'early'
+              elif degree_in_sign < 20:
+                  classification = 'middle'
+              else:
+                  classification = 'late'
+
+              return zodiac_signs[sign_index], degree_in_sign, classification
+
+          def calculate_angle_difference(angle1: float, angle2: float) -> float:
+              """Calculate the smaller angle between two positions."""
+              diff = abs(normalize_angle(angle1) - normalize_angle(angle2))
+              return min(diff, 360 - diff)
+
+          def is_within_orb(angle: float, target: float, orb: float) -> bool:
+              """Check if angle is within orb of target."""
+              diff = calculate_angle_difference(angle, target)
+              return diff <= orb
+
+          def determine_applying_separating(lon1: float, speed1: float, lon2: float, speed2: float, target_angle: float) -> str:
+              """Determine if aspect is applying or separating."""
+              # Simplified logic
+              relative_speed = speed1 - speed2
+              current_angle = calculate_angle_difference(lon1, lon2)
+
+              if abs(relative_speed) < 0.01:
+                  return 'stationary'
+              elif relative_speed > 0:
+                  return 'applying'
+              else:
+                  return 'separating'
+
+          def calculate_lunar_phase(sun_lon: float, moon_lon: float) -> float:
+              """Calculate lunar phase angle."""
+              phase = normalize_angle(moon_lon - sun_lon)
+              return phase
+
+          def classify_lunar_phase(phase_angle: float) -> str:
+              """Classify lunar phase by angle."""
+              phase = phase_angle % 360
+              if 0 <= phase < 45 or 315 <= phase < 360:
+                  return "New Moon"
+              elif 45 <= phase < 135:
+                  return "Waxing"
+              elif 135 <= phase < 225:
+                  return "Full Moon"
+              else:
+                  return "Waning"
+          EOF
+
+          # Create simplified trading analysis script
+          cat > scripts/astro/simple_astro_trading_analysis.py << 'EOF'
+          #!/usr/bin/env python3
+          import os
+          import sys
+          import json
+          import logging
+          import psycopg2
+          from datetime import datetime, date
+          from typing import List, Dict, Any
+
+          logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+          logger = logging.getLogger(__name__)
+
+          def get_trading_opportunities(limit: int = 50) -> List[Dict[str, Any]]:
+              """Get trading opportunities from database."""
+              try:
+                  db_config = {
+                      'host': os.getenv('DB_HOST'),
+                      'port': os.getenv('DB_PORT', '5432'),
+                      'database': os.getenv('DB_NAME'),
+                      'user': os.getenv('DB_USER'),
+                      'password': os.getenv('DB_PASSWORD'),
+                  }
+
+                  conn = psycopg2.connect(**db_config)
+                  cursor = conn.cursor()
+
+                  cursor.execute("""
+                      SELECT symbol, position_type, entry_date, exit_date,
+                             entry_price, exit_price, holding_days, profit_percent, trade_score
+                      FROM trading_opportunities
+                      ORDER BY trade_score DESC
+                      LIMIT %s
+                  """, (limit,))
+
+                  results = []
+                  for row in cursor.fetchall():
+                      results.append({
+                          'symbol': row[0],
+                          'position_type': row[1],
+                          'entry_date': row[2],
+                          'exit_date': row[3],
+                          'entry_price': float(row[4]),
+                          'exit_price': float(row[5]),
+                          'holding_days': row[6],
+                          'profit_percent': float(row[7]),
+                          'trade_score': float(row[8])
+                      })
+
+                  cursor.close()
+                  conn.close()
+                  logger.info(f"Retrieved {len(results)} trading opportunities")
+                  return results
+
+              except Exception as e:
+                  logger.error(f"Error retrieving trading opportunities: {e}")
+                  return []
+
+          def generate_llm_prompt(opportunities: List[Dict[str, Any]]) -> str:
+              """Generate LLM analysis prompt."""
+              long_trades = [o for o in opportunities if o['position_type'] == 'long']
+              short_trades = [o for o in opportunities if o['position_type'] == 'short']
+
+              prompt_parts = [
+                  "# Astrological Analysis Request for Trading Opportunities",
+                  "",
+                  "Please analyze these successful trading opportunities to identify potential astrological patterns:",
+                  "",
+                  "## Successful Long Positions:",
+              ]
+
+              for i, trade in enumerate(long_trades[:15], 1):
+                  prompt_parts.append(
+                      f"{i}. {trade['symbol']} LONG: {trade['entry_date']} → {trade['exit_date']} "
+                      f"({trade['holding_days']}d), Profit: {trade['profit_percent']:.1f}%"
+                  )
+
+              prompt_parts.extend([
+                  "",
+                  "## Successful Short Positions:",
+              ])
+
+              for i, trade in enumerate(short_trades[:15], 1):
+                  prompt_parts.append(
+                      f"{i}. {trade['symbol']} SHORT: {trade['entry_date']} → {trade['exit_date']} "
+                      f"({trade['holding_days']}d), Profit: {trade['profit_percent']:.1f}%"
+                  )
+
+              prompt_parts.extend([
+                  "",
+                  "## Analysis Questions:",
+                  "1. What astrological events (planetary aspects, moon phases, planetary transits) might correlate with these successful trade entry dates?",
+                  "2. Are there patterns in the holding periods that align with astrological cycles?",
+                  "3. Do you see differences in astrological timing between profitable long vs short positions?",
+                  "4. What planetary positions or lunar phases appear most frequently around these profitable trades?",
+                  "5. Based on these dates, what astrological indicators might signal good entry/exit points for oil futures trading?",
+                  "",
+                  "Please provide specific astrological insights and actionable trading guidance based on these successful trade dates."
+              ])
+
+              return "\n".join(prompt_parts)
+
+          def main():
+              logger.info("🌟 Starting Astrological Trading Pattern Analysis")
+
+              # Get trading opportunities
+              opportunities = get_trading_opportunities(50)
+              if not opportunities:
+                  logger.error("No trading opportunities found")
+                  return
+
+              # Generate LLM prompt
+              llm_prompt = generate_llm_prompt(opportunities)
+
+              # Create analysis summary
+              long_count = len([o for o in opportunities if o['position_type'] == 'long'])
+              short_count = len([o for o in opportunities if o['position_type'] == 'short'])
+
+              print("\n" + "="*80)
+              print("🌟 ASTROLOGICAL TRADING PATTERN ANALYSIS")
+              print("="*80)
+              print(f"Total Opportunities Analyzed: {len(opportunities)}")
+              print(f"Long Positions: {long_count}")
+              print(f"Short Positions: {short_count}")
+
+              # Show date range
+              all_dates = []
+              for opp in opportunities:
+                  all_dates.extend([opp['entry_date'], opp['exit_date']])
+              print(f"Date Range: {min(all_dates)} to {max(all_dates)}")
+
+              print("\n📋 LLM ANALYSIS PROMPT:")
+              print("="*80)
+              print(llm_prompt)
+              print("="*80)
+
+              # Save results
+              results = {
+                  'analysis_date': datetime.now().isoformat(),
+                  'opportunities_count': len(opportunities),
+                  'long_positions': long_count,
+                  'short_positions': short_count,
+                  'date_range': {
+                      'start': str(min(all_dates)),
+                      'end': str(max(all_dates))
+                  },
+                  'llm_prompt': llm_prompt,
+                  'opportunities': opportunities
+              }
+
+              output_file = f"/tmp/astro_trading_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+              try:
+                  with open(output_file, 'w') as f:
+                      json.dump(results, f, indent=2, default=str)
+                  logger.info(f"✅ Results saved to {output_file}")
+              except Exception as e:
+                  logger.error(f"Error saving results: {e}")
+
+              print(f"\n💾 Results saved to: {output_file}")
+              print("\n💡 Next Steps:")
+              print("1. Copy the LLM analysis prompt above")
+              print("2. Submit it to Claude Sonnet or another LLM")
+              print("3. Analyze the astrological patterns identified")
+              print("4. Use insights for future trading decisions")
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          # Make script executable
+          chmod +x scripts/astro/simple_astro_trading_analysis.py
+
+          # Run the analysis
+          echo "🌟 Starting astrological pattern analysis..."
+          python3 scripts/astro/simple_astro_trading_analysis.py
+
+          echo "🎉 Astrological trading analysis completed!"
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+
+        volumeMounts:
+        - name: tmp-storage
+          mountPath: /tmp
+
+      volumes:
+      - name: tmp-storage
+        emptyDir:
+          sizeLimit: 2Gi
+
+      # Tolerate CriticalAddonsOnly taint
+      tolerations:
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoExecute"
+
+      restartPolicy: Never
+
+  # Retry failed jobs up to 2 times
+  backoffLimit: 2
+
+  # Set maximum run time to 2 hours
+  activeDeadlineSeconds: 7200

@@ -1,0 +1,544 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: comprehensive-astro-trading-analysis
+  namespace: time-series-indexing
+  labels:
+    app: comprehensive-astro-trading
+    component: full-astrological-analysis
+    type: market-astro-correlation
+spec:
+  # Keep job for 48 hours after completion
+  ttlSecondsAfterFinished: 172800
+  template:
+    metadata:
+      labels:
+        app: comprehensive-astro-trading
+        component: full-astrological-analysis
+    spec:
+      containers:
+      - name: astro-trading-analyzer
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "🌟 Starting COMPREHENSIVE Astrological Trading Analysis"
+          echo "This will calculate actual planetary positions and correlate with trading data"
+          echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          # Install system dependencies
+          apt-get update && apt-get install -y \
+            libpq-dev \
+            gcc \
+            curl \
+            wget \
+            build-essential \
+            && rm -rf /var/lib/apt/lists/*
+
+          # Install Python dependencies including Swiss Ephemeris
+          pip install --no-cache-dir \
+            psycopg2-binary \
+            pandas \
+            numpy \
+            pyyaml \
+            pyswisseph \
+            anthropic \
+            requests
+
+          # Create working directory
+          mkdir -p /app/comprehensive_astro
+          cd /app/comprehensive_astro
+
+          # Create comprehensive astrological trading analysis
+          cat > comprehensive_astro_trading.py << 'EOF'
+          #!/usr/bin/env python3
+          import os
+          import sys
+          import json
+          import logging
+          import psycopg2
+          import pandas as pd
+          import swisseph as swe
+          from datetime import datetime, date, timedelta
+          from typing import List, Dict, Any, Tuple
+          import anthropic
+
+          logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+          logger = logging.getLogger(__name__)
+
+          class ComprehensiveAstroTradingAnalyzer:
+              def __init__(self):
+                  self.db_config = {
+                      'host': os.getenv('DB_HOST'),
+                      'port': os.getenv('DB_PORT', '5432'),
+                      'database': os.getenv('DB_NAME'),
+                      'user': os.getenv('DB_USER'),
+                      'password': os.getenv('DB_PASSWORD'),
+                  }
+
+                  # Initialize Claude client if API key provided
+                  self.claude_client = None
+                  claude_api_key = os.getenv('ANTHROPIC_API_KEY')
+                  if claude_api_key:
+                      self.claude_client = anthropic.Anthropic(api_key=claude_api_key)
+                      logger.info("✅ Claude API client initialized")
+                  else:
+                      logger.warning("⚠️ No Claude API key - will generate prompt only")
+
+              def get_trading_opportunities(self, limit: int = 50) -> List[Dict[str, Any]]:
+                  """Get trading opportunities from database."""
+                  try:
+                      conn = psycopg2.connect(**self.db_config)
+                      cursor = conn.cursor()
+
+                      cursor.execute("""
+                          SELECT symbol, position_type, entry_date, exit_date,
+                                 entry_price, exit_price, holding_days, profit_percent, trade_score
+                          FROM trading_opportunities
+                          ORDER BY trade_score DESC
+                          LIMIT %s
+                      """, (limit,))
+
+                      results = []
+                      for row in cursor.fetchall():
+                          results.append({
+                              'symbol': row[0],
+                              'position_type': row[1],
+                              'entry_date': row[2],
+                              'exit_date': row[3],
+                              'entry_price': float(row[4]),
+                              'exit_price': float(row[5]),
+                              'holding_days': row[6],
+                              'profit_percent': float(row[7]),
+                              'trade_score': float(row[8])
+                          })
+
+                      cursor.close()
+                      conn.close()
+                      logger.info(f"Retrieved {len(results)} trading opportunities")
+                      return results
+
+                  except Exception as e:
+                      logger.error(f"Error retrieving trading opportunities: {e}")
+                      return []
+
+              def calculate_planetary_positions(self, target_date: date) -> Dict[str, Any]:
+                  """Calculate actual planetary positions for a given date using Swiss Ephemeris."""
+                  try:
+                      # Convert to Julian day (noon UTC)
+                      julian_day = swe.julday(target_date.year, target_date.month, target_date.day, 12.0)
+
+                      planets = {
+                          'sun': swe.SUN,
+                          'moon': swe.MOON,
+                          'mercury': swe.MERCURY,
+                          'venus': swe.VENUS,
+                          'mars': swe.MARS,
+                          'jupiter': swe.JUPITER,
+                          'saturn': swe.SATURN,
+                          'uranus': swe.URANUS,
+                          'neptune': swe.NEPTUNE,
+                          'pluto': swe.PLUTO
+                      }
+
+                      positions = {}
+                      for planet_name, planet_id in planets.items():
+                          try:
+                              result, ret = swe.calc_ut(julian_day, planet_id)
+                              if ret >= 0:
+                                  longitude = result[0]
+                                  sign, degree_in_sign = self.longitude_to_sign(longitude)
+
+                                  positions[planet_name] = {
+                                      'longitude': longitude,
+                                      'sign': sign,
+                                      'degree': degree_in_sign,
+                                      'speed': result[3]
+                                  }
+                          except Exception as e:
+                              logger.error(f"Error calculating {planet_name}: {e}")
+
+                      # Calculate lunar phase
+                      if 'sun' in positions and 'moon' in positions:
+                          sun_lon = positions['sun']['longitude']
+                          moon_lon = positions['moon']['longitude']
+                          lunar_phase = (moon_lon - sun_lon) % 360
+                          positions['lunar_phase'] = {
+                              'angle': lunar_phase,
+                              'name': self.get_lunar_phase_name(lunar_phase)
+                          }
+
+                      # Calculate major aspects
+                      aspects = self.calculate_major_aspects(positions)
+                      positions['aspects'] = aspects
+
+                      return positions
+
+                  except Exception as e:
+                      logger.error(f"Error calculating positions for {target_date}: {e}")
+                      return {}
+
+              def longitude_to_sign(self, longitude: float) -> Tuple[str, float]:
+                  """Convert longitude to zodiac sign and degree."""
+                  signs = ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
+                          'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces']
+
+                  sign_index = int(longitude // 30)
+                  degree_in_sign = longitude % 30
+
+                  return signs[sign_index], degree_in_sign
+
+              def get_lunar_phase_name(self, phase_angle: float) -> str:
+                  """Get lunar phase name from angle."""
+                  if 0 <= phase_angle < 45 or 315 <= phase_angle < 360:
+                      return "New Moon"
+                  elif 45 <= phase_angle < 135:
+                      return "Waxing Moon"
+                  elif 135 <= phase_angle < 225:
+                      return "Full Moon"
+                  else:
+                      return "Waning Moon"
+
+              def calculate_major_aspects(self, positions: Dict[str, Any]) -> List[Dict[str, Any]]:
+                  """Calculate major aspects between planets."""
+                  aspects = []
+                  planets = ['sun', 'moon', 'mercury', 'venus', 'mars', 'jupiter', 'saturn']
+
+                  aspect_types = {
+                      'conjunction': (0, 8),
+                      'opposition': (180, 8),
+                      'trine': (120, 8),
+                      'square': (90, 8),
+                      'sextile': (60, 6)
+                  }
+
+                  for i, planet1 in enumerate(planets):
+                      for planet2 in planets[i+1:]:
+                          if planet1 in positions and planet2 in positions:
+                              lon1 = positions[planet1]['longitude']
+                              lon2 = positions[planet2]['longitude']
+
+                              angle = abs(lon1 - lon2)
+                              if angle > 180:
+                                  angle = 360 - angle
+
+                              for aspect_name, (target_angle, orb) in aspect_types.items():
+                                  if abs(angle - target_angle) <= orb:
+                                      aspects.append({
+                                          'planet1': planet1,
+                                          'planet2': planet2,
+                                          'aspect': aspect_name,
+                                          'orb': abs(angle - target_angle),
+                                          'exactness': 1 - (abs(angle - target_angle) / orb)
+                                      })
+
+                  return aspects
+
+              def create_astrological_description(self, astro_data: Dict[str, Any], trade_date: date) -> str:
+                  """Create natural language description of astrological conditions."""
+                  descriptions = []
+
+                  descriptions.append(f"Astrological conditions for {trade_date}:")
+
+                  # Planetary positions
+                  planet_positions = []
+                  for planet in ['sun', 'moon', 'mercury', 'venus', 'mars', 'jupiter', 'saturn']:
+                      if planet in astro_data:
+                          pos = astro_data[planet]
+                          retro = " (retrograde)" if pos['speed'] < 0 else ""
+                          planet_positions.append(f"{planet.title()} in {pos['sign']} {pos['degree']:.1f}°{retro}")
+
+                  if planet_positions:
+                      descriptions.append("Planets: " + "; ".join(planet_positions))
+
+                  # Lunar phase
+                  if 'lunar_phase' in astro_data:
+                      descriptions.append(f"Lunar phase: {astro_data['lunar_phase']['name']}")
+
+                  # Major aspects
+                  if 'aspects' in astro_data and astro_data['aspects']:
+                      major_aspects = [a for a in astro_data['aspects'] if a['exactness'] > 0.7]
+                      if major_aspects:
+                          aspect_descriptions = []
+                          for aspect in major_aspects[:3]:  # Top 3 most exact
+                              aspect_descriptions.append(
+                                  f"{aspect['planet1'].title()}-{aspect['planet2'].title()} {aspect['aspect']}"
+                              )
+                          descriptions.append("Key aspects: " + "; ".join(aspect_descriptions))
+
+                  return " | ".join(descriptions)
+
+              def analyze_trading_opportunities_with_astro(self, opportunities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                  """Analyze trading opportunities with actual astrological data."""
+                  analyzed_opportunities = []
+
+                  for i, opp in enumerate(opportunities, 1):
+                      logger.info(f"Analyzing opportunity {i}/{len(opportunities)}: {opp['symbol']} {opp['position_type']}")
+
+                      try:
+                          # Calculate astrological data for entry and exit dates
+                          entry_astro = self.calculate_planetary_positions(opp['entry_date'])
+                          exit_astro = self.calculate_planetary_positions(opp['exit_date'])
+
+                          # Create descriptions
+                          entry_description = self.create_astrological_description(entry_astro, opp['entry_date'])
+                          exit_description = self.create_astrological_description(exit_astro, opp['exit_date'])
+
+                          analyzed_opp = {
+                              'trade_info': opp,
+                              'entry_astrology': {
+                                  'date': opp['entry_date'],
+                                  'description': entry_description,
+                                  'planetary_data': entry_astro
+                              },
+                              'exit_astrology': {
+                                  'date': opp['exit_date'],
+                                  'description': exit_description,
+                                  'planetary_data': exit_astro
+                              }
+                          }
+
+                          analyzed_opportunities.append(analyzed_opp)
+
+                      except Exception as e:
+                          logger.error(f"Error analyzing opportunity {i}: {e}")
+                          continue
+
+                  return analyzed_opportunities
+
+              def generate_comprehensive_prompt(self, analyzed_opportunities: List[Dict[str, Any]]) -> str:
+                  """Generate comprehensive prompt with actual astrological data."""
+                  long_trades = [a for a in analyzed_opportunities if a['trade_info']['position_type'] == 'long']
+                  short_trades = [a for a in analyzed_opportunities if a['trade_info']['position_type'] == 'short']
+
+                  prompt_parts = [
+                      "# Comprehensive Astrological Analysis of Profitable Oil Futures Trading",
+                      "",
+                      "Please analyze these successful trading opportunities with their actual astrological conditions.",
+                      "Look for patterns in planetary positions, aspects, and lunar phases that correlate with profitable trades.",
+                      "",
+                      "## Successful Long Positions with Astrological Data:",
+                      ""
+                  ]
+
+                  for i, analysis in enumerate(long_trades[:10], 1):
+                      trade = analysis['trade_info']
+                      entry_astro = analysis['entry_astrology']['description']
+                      exit_astro = analysis['exit_astrology']['description']
+
+                      prompt_parts.append(
+                          f"### Trade {i}: {trade['symbol']} LONG - {trade['profit_percent']:.1f}% profit in {trade['holding_days']} days"
+                      )
+                      prompt_parts.append(f"**Entry ({trade['entry_date']})**: {entry_astro}")
+                      prompt_parts.append(f"**Exit ({trade['exit_date']})**: {exit_astro}")
+                      prompt_parts.append("")
+
+                  prompt_parts.extend([
+                      "## Successful Short Positions with Astrological Data:",
+                      ""
+                  ])
+
+                  for i, analysis in enumerate(short_trades[:10], 1):
+                      trade = analysis['trade_info']
+                      entry_astro = analysis['entry_astrology']['description']
+                      exit_astro = analysis['exit_astrology']['description']
+
+                      prompt_parts.append(
+                          f"### Trade {i}: {trade['symbol']} SHORT - {trade['profit_percent']:.1f}% profit in {trade['holding_days']} days"
+                      )
+                      prompt_parts.append(f"**Entry ({trade['entry_date']})**: {entry_astro}")
+                      prompt_parts.append(f"**Exit ({trade['exit_date']})**: {exit_astro}")
+                      prompt_parts.append("")
+
+                  prompt_parts.extend([
+                      "## Analysis Questions:",
+                      "1. What planetary positions or signs appear most frequently in profitable entry conditions?",
+                      "2. Are there specific aspects (conjunctions, trines, squares, etc.) that correlate with successful trades?",
+                      "3. Do lunar phases show patterns in profitability (e.g., better entries during New Moon vs Full Moon)?",
+                      "4. Are there differences in astrological timing between profitable long vs short positions?",
+                      "5. Do Mars or Jupiter aspects correlate with volatility and profit opportunities?",
+                      "6. Are there seasonal/zodiacal patterns (e.g., Sun in certain signs)?",
+                      "7. What specific astrological indicators should traders watch for optimal entry/exit timing?",
+                      "",
+                      "Please provide specific, actionable astrological trading guidance based on this data."
+                  ])
+
+                  return "\n".join(prompt_parts)
+
+              def query_claude(self, prompt: str) -> str:
+                  """Query Claude API for astrological analysis."""
+                  if not self.claude_client:
+                      return "No Claude API key provided - cannot perform automatic analysis"
+
+                  try:
+                      logger.info("🤖 Querying Claude for astrological pattern analysis...")
+
+                      message = self.claude_client.messages.create(
+                          model="claude-3-sonnet-20240229",
+                          max_tokens=4000,
+                          messages=[
+                              {
+                                  "role": "user",
+                                  "content": prompt
+                              }
+                          ]
+                      )
+
+                      return message.content[0].text if message.content else "No response from Claude"
+
+                  except Exception as e:
+                      logger.error(f"Error querying Claude: {e}")
+                      return f"Error querying Claude: {e}"
+
+              def run_comprehensive_analysis(self):
+                  """Run complete astrological trading analysis."""
+                  logger.info("🌟 Starting comprehensive astrological trading analysis")
+
+                  # Get trading opportunities
+                  opportunities = self.get_trading_opportunities(30)  # Analyze top 30
+                  if not opportunities:
+                      logger.error("No trading opportunities found")
+                      return
+
+                  # Analyze with actual astrological data
+                  logger.info("🔭 Calculating astrological data for trading opportunities...")
+                  analyzed_opportunities = self.analyze_trading_opportunities_with_astro(opportunities)
+
+                  if not analyzed_opportunities:
+                      logger.error("No astrological analysis completed")
+                      return
+
+                  # Generate comprehensive prompt
+                  comprehensive_prompt = self.generate_comprehensive_prompt(analyzed_opportunities)
+
+                  # Query Claude if API key available
+                  claude_analysis = self.query_claude(comprehensive_prompt)
+
+                  # Create results
+                  results = {
+                      'analysis_timestamp': datetime.now().isoformat(),
+                      'opportunities_analyzed': len(analyzed_opportunities),
+                      'analysis_method': 'Swiss Ephemeris + Claude API',
+                      'analyzed_opportunities': analyzed_opportunities,
+                      'comprehensive_prompt': comprehensive_prompt,
+                      'claude_analysis': claude_analysis
+                  }
+
+                  # Save results
+                  output_file = f"/tmp/comprehensive_astro_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                  try:
+                      with open(output_file, 'w') as f:
+                          json.dump(results, f, indent=2, default=str)
+                      logger.info(f"✅ Results saved to {output_file}")
+                  except Exception as e:
+                      logger.error(f"Error saving results: {e}")
+
+                  # Display results
+                  print("\n" + "="*100)
+                  print("🌟 COMPREHENSIVE ASTROLOGICAL TRADING ANALYSIS COMPLETED")
+                  print("="*100)
+                  print(f"Analyzed {len(analyzed_opportunities)} trading opportunities with actual planetary data")
+
+                  print("\n📊 SAMPLE ASTROLOGICAL ANALYSIS:")
+                  print("-"*80)
+                  if analyzed_opportunities:
+                      sample = analyzed_opportunities[0]
+                      trade = sample['trade_info']
+                      print(f"Trade: {trade['symbol']} {trade['position_type'].upper()} - {trade['profit_percent']:.1f}% profit")
+                      print(f"Entry: {sample['entry_astrology']['description']}")
+                      print(f"Exit: {sample['exit_astrology']['description']}")
+
+                  if claude_analysis and "Error" not in claude_analysis and "No Claude" not in claude_analysis:
+                      print("\n🤖 CLAUDE'S ASTROLOGICAL PATTERN ANALYSIS:")
+                      print("="*80)
+                      print(claude_analysis)
+                  else:
+                      print("\n📋 MANUAL ANALYSIS PROMPT:")
+                      print("="*80)
+                      print("Copy this prompt to Claude for manual analysis:")
+                      print(comprehensive_prompt[:1000] + "..." if len(comprehensive_prompt) > 1000 else comprehensive_prompt)
+
+                  print(f"\n💾 Full results saved to: {output_file}")
+
+          def main():
+              analyzer = ComprehensiveAstroTradingAnalyzer()
+              analyzer.run_comprehensive_analysis()
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          # Make script executable
+          chmod +x comprehensive_astro_trading.py
+
+          # Run the comprehensive analysis
+          echo "🌟 Starting comprehensive astrological analysis with actual planetary calculations..."
+          python3 comprehensive_astro_trading.py
+
+          echo "🎉 Comprehensive astrological trading analysis completed!"
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: anthropic-api-key
+              optional: true
+
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+
+        volumeMounts:
+        - name: tmp-storage
+          mountPath: /tmp
+
+      volumes:
+      - name: tmp-storage
+        emptyDir:
+          sizeLimit: 4Gi
+
+      # Tolerate CriticalAddonsOnly taint
+      tolerations:
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoExecute"
+
+      restartPolicy: Never
+
+  # Retry failed jobs up to 2 times
+  backoffLimit: 2
+
+  # Set maximum run time to 3 hours (Swiss Ephemeris calculations take time)
+  activeDeadlineSeconds: 10800
