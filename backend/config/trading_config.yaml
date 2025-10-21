@@ -22,6 +22,9 @@ trading_rules:
   min_holding_days: 3
   max_holding_days: 30
 
+  # Profit requirements
+  min_profit_percent: 5.0  # Minimum profit to consider as trading opportunity
+
   # Risk management
   max_unrealized_loss_percent: 50.0  # Maximum retreat from peak gains
 

@@ -392,6 +392,158 @@ spec:
                       logger.error(f"Error querying Claude: {e}")
                       return f"Error querying Claude: {e}"
 
+              def store_astrological_analysis_in_db(self, analyzed_opportunities: List[Dict[str, Any]], claude_analysis: str = None) -> None:
+                  """Store astrological analysis results directly in trading_opportunities table."""
+                  try:
+                      conn = psycopg2.connect(**self.db_config)
+                      cursor = conn.cursor()
+
+                      # First, add the astrological columns if they don't exist
+                      self.ensure_astro_columns_exist(cursor)
+
+                      updated_count = 0
+                      for analysis in analyzed_opportunities:
+                          trade = analysis['trade_info']
+                          entry_astro = analysis['entry_astrology']
+                          exit_astro = analysis['exit_astrology']
+
+                          # Calculate astrological score (0-100)
+                          astro_score = self.calculate_astrological_score(entry_astro, exit_astro)
+
+                          # Create comprehensive analysis summary
+                          analysis_summary = self.create_analysis_summary(entry_astro, exit_astro, trade)
+
+                          # Update the trading opportunity with astrological data
+                          # Use a more reliable WHERE clause without price precision issues
+                          cursor.execute("""
+                              UPDATE trading_opportunities
+                              SET entry_astro_description = %s,
+                                  exit_astro_description = %s,
+                                  entry_planetary_data = %s,
+                                  exit_planetary_data = %s,
+                                  astro_analysis_summary = %s,
+                                  claude_analysis = %s,
+                                  astrological_score = %s,
+                                  astro_analyzed_at = NOW()
+                              WHERE symbol = %s
+                                AND position_type = %s
+                                AND entry_date = %s::date
+                                AND exit_date = %s::date
+                                AND holding_days = %s
+                                AND ABS(profit_percent - %s) < 0.1
+                          """, (
+                              entry_astro['description'],
+                              exit_astro['description'],
+                              json.dumps(entry_astro['planetary_data']),
+                              json.dumps(exit_astro['planetary_data']),
+                              analysis_summary,
+                              claude_analysis,
+                              astro_score,
+                              trade['symbol'],
+                              trade['position_type'],
+                              trade['entry_date'],
+                              trade['exit_date'],
+                              trade['holding_days'],
+                              trade['profit_percent']
+                          ))
+
+                          if cursor.rowcount > 0:
+                              updated_count += 1
+
+                      conn.commit()
+                      cursor.close()
+                      conn.close()
+                      logger.info(f"✅ Stored astrological analysis for {updated_count}/{len(analyzed_opportunities)} opportunities in database")
+
+                  except Exception as e:
+                      logger.error(f"❌ Error storing astrological analysis in database: {e}")
+                      if conn:
+                          conn.rollback()
+                      raise
+
+              def ensure_astro_columns_exist(self, cursor) -> None:
+                  """Ensure astrological analysis columns exist in trading_opportunities table."""
+                  try:
+                      cursor.execute("""
+                          ALTER TABLE trading_opportunities
+                          ADD COLUMN IF NOT EXISTS entry_astro_description TEXT,
+                          ADD COLUMN IF NOT EXISTS exit_astro_description TEXT,
+                          ADD COLUMN IF NOT EXISTS entry_planetary_data JSONB,
+                          ADD COLUMN IF NOT EXISTS exit_planetary_data JSONB,
+                          ADD COLUMN IF NOT EXISTS astro_analysis_summary TEXT,
+                          ADD COLUMN IF NOT EXISTS claude_analysis TEXT,
+                          ADD COLUMN IF NOT EXISTS astrological_score DOUBLE PRECISION,
+                          ADD COLUMN IF NOT EXISTS astro_analyzed_at TIMESTAMP WITH TIME ZONE
+                      """)
+                      logger.info("✅ Ensured astrological columns exist in trading_opportunities table")
+                  except Exception as e:
+                      logger.warning(f"⚠️ Could not add astrological columns: {e}")
+
+              def calculate_astrological_score(self, entry_astro: Dict[str, Any], exit_astro: Dict[str, Any]) -> float:
+                  """Calculate a composite astrological score (0-100) for the trade."""
+                  score = 50.0  # Base score
+
+                  try:
+                      # Score based on favorable aspects at entry
+                      entry_data = entry_astro['planetary_data']
+                      if 'aspects' in entry_data:
+                          for aspect in entry_data['aspects']:
+                              if aspect['exactness'] > 0.8:  # Very exact aspects
+                                  if aspect['aspect'] in ['trine', 'sextile']:
+                                      score += 10 * aspect['exactness']
+                                  elif aspect['aspect'] in ['conjunction']:
+                                      score += 5 * aspect['exactness']
+                                  elif aspect['aspect'] in ['square', 'opposition']:
+                                      score -= 5 * aspect['exactness']
+
+                      # Score based on lunar phase
+                      if 'lunar_phase' in entry_data:
+                          phase_name = entry_data['lunar_phase']['name']
+                          if phase_name in ['New Moon', 'Waxing Moon']:
+                              score += 5  # Growth phases favor long positions
+                          elif phase_name in ['Full Moon', 'Waning Moon']:
+                              score += 3  # High energy/completion phases
+
+                      # Ensure score is within 0-100 range
+                      score = max(0, min(100, score))
+
+                  except Exception as e:
+                      logger.warning(f"⚠️ Error calculating astrological score: {e}")
+                      score = 50.0  # Default neutral score
+
+                  return round(score, 2)
+
+              def create_analysis_summary(self, entry_astro: Dict[str, Any], exit_astro: Dict[str, Any], trade: Dict[str, Any]) -> str:
+                  """Create a concise summary of the astrological analysis."""
+                  summary_parts = []
+
+                  try:
+                      # Trade basics
+                      summary_parts.append(f"{trade['symbol']} {trade['position_type'].upper()} trade: {trade['profit_percent']:.1f}% profit in {trade['holding_days']} days")
+
+                      # Entry conditions
+                      entry_data = entry_astro['planetary_data']
+                      if 'lunar_phase' in entry_data:
+                          summary_parts.append(f"Entry during {entry_data['lunar_phase']['name']}")
+
+                      # Key aspects at entry
+                      if 'aspects' in entry_data:
+                          strong_aspects = [a for a in entry_data['aspects'] if a['exactness'] > 0.8]
+                          if strong_aspects:
+                              aspect_desc = f"{strong_aspects[0]['planet1']}-{strong_aspects[0]['planet2']} {strong_aspects[0]['aspect']}"
+                              summary_parts.append(f"Key aspect: {aspect_desc}")
+
+                      # Exit conditions
+                      exit_data = exit_astro['planetary_data']
+                      if 'lunar_phase' in exit_data:
+                          summary_parts.append(f"Exit during {exit_data['lunar_phase']['name']}")
+
+                  except Exception as e:
+                      logger.warning(f"⚠️ Error creating analysis summary: {e}")
+                      return f"Astrological analysis for {trade['symbol']} {trade['position_type']} trade"
+
+                  return " | ".join(summary_parts)
+
               def run_comprehensive_analysis(self):
                   """Run complete astrological trading analysis."""
                   logger.info("🌟 Starting comprehensive astrological trading analysis")
@@ -416,30 +568,24 @@ spec:
                   # Query Claude if API key available
                   claude_analysis = self.query_claude(comprehensive_prompt)
 
-                  # Create results
+                  # Store results directly in database
+                  logger.info("💾 Storing astrological analysis in database...")
+                  self.store_astrological_analysis_in_db(analyzed_opportunities, claude_analysis)
+
+                  # Create summary results for logging
                   results = {
                       'analysis_timestamp': datetime.now().isoformat(),
                       'opportunities_analyzed': len(analyzed_opportunities),
-                      'analysis_method': 'Swiss Ephemeris + Claude API',
-                      'analyzed_opportunities': analyzed_opportunities,
-                      'comprehensive_prompt': comprehensive_prompt,
-                      'claude_analysis': claude_analysis
+                      'analysis_method': 'Swiss Ephemeris + Claude API + Database Storage',
+                      'storage_location': 'trading_opportunities table'
                   }
-
-                  # Save results
-                  output_file = f"/tmp/comprehensive_astro_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-                  try:
-                      with open(output_file, 'w') as f:
-                          json.dump(results, f, indent=2, default=str)
-                      logger.info(f"✅ Results saved to {output_file}")
-                  except Exception as e:
-                      logger.error(f"Error saving results: {e}")
 
                   # Display results
                   print("\n" + "="*100)
                   print("🌟 COMPREHENSIVE ASTROLOGICAL TRADING ANALYSIS COMPLETED")
                   print("="*100)
                   print(f"Analyzed {len(analyzed_opportunities)} trading opportunities with actual planetary data")
+                  print("💾 Results stored directly in trading_opportunities table")
 
                   print("\n📊 SAMPLE ASTROLOGICAL ANALYSIS:")
                   print("-"*80)
@@ -455,12 +601,23 @@ spec:
                       print("="*80)
                       print(claude_analysis)
                   else:
-                      print("\n📋 MANUAL ANALYSIS PROMPT:")
+                      print("\n📋 MANUAL ANALYSIS PROMPT (for reference):")
                       print("="*80)
-                      print("Copy this prompt to Claude for manual analysis:")
                       print(comprehensive_prompt[:1000] + "..." if len(comprehensive_prompt) > 1000 else comprehensive_prompt)
 
-                  print(f"\n💾 Full results saved to: {output_file}")
+                  print("\n📈 DATA ACCESS:")
+                  print("="*80)
+                  print("Query astrological trading data with:")
+                  print("SELECT symbol, position_type, profit_percent, entry_date, exit_date,")
+                  print("       entry_astro_description, exit_astro_description, astrological_score")
+                  print("FROM trading_opportunities")
+                  print("WHERE astro_analyzed_at IS NOT NULL")
+                  print("ORDER BY astrological_score DESC;")
+                  print("\n🔍 Find specific patterns with:")
+                  print("SELECT * FROM trading_opportunities")
+                  print("WHERE entry_astro_description ILIKE '%mars%jupiter%trine%'")
+                  print("  AND profit_percent > 10")
+                  print("ORDER BY astrological_score DESC;")
 
           def main():
               analyzer = ComprehensiveAstroTradingAnalyzer()

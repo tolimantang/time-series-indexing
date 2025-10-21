@@ -42,6 +42,7 @@ class TradingOpportunityDetector:
         self.trading_rules = config.get('trading_rules', {})
         self.min_holding_days = self.trading_rules.get('min_holding_days', 3)
         self.max_holding_days = self.trading_rules.get('max_holding_days', 30)
+        self.min_profit_percent = self.trading_rules.get('min_profit_percent', 5.0)
         self.max_unrealized_loss_percent = self.trading_rules.get('max_unrealized_loss_percent', 50.0)
 
         self.analyze_long = config.get('position_types', {}).get('analyze_long', True)
@@ -248,8 +249,8 @@ class TradingOpportunityDetector:
 
     def _is_valid_long_trade(self, trade_analysis: Dict[str, Any], final_profit: float) -> bool:
         """Check if a long trade meets our criteria."""
-        # Must be profitable
-        if final_profit <= 0:
+        # Must meet minimum profit threshold
+        if final_profit < self.min_profit_percent:
             return False
 
         # Check maximum drawdown from peak
@@ -260,8 +261,8 @@ class TradingOpportunityDetector:
 
     def _is_valid_short_trade(self, trade_analysis: Dict[str, Any], final_profit: float) -> bool:
         """Check if a short trade meets our criteria."""
-        # Must be profitable
-        if final_profit <= 0:
+        # Must meet minimum profit threshold
+        if final_profit < self.min_profit_percent:
             return False
 
         # Check maximum drawdown from peak

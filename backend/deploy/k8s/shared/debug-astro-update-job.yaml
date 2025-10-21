@@ -1,0 +1,182 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: debug-astro-update
+  namespace: time-series-indexing
+  labels:
+    app: debug-astro-update
+    component: database-debug
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: debug-astro-update
+    spec:
+      containers:
+      - name: debug-astro-update
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "🔍 Debugging Astrological Data Update Issue"
+
+          # Install dependencies
+          apt-get update && apt-get install -y libpq-dev gcc && pip install psycopg2-binary pyswisseph
+
+          # Create debug script
+          cat > debug_update.py << 'EOF'
+          import psycopg2
+          import json
+          import swisseph as swe
+          from datetime import date
+
+          # Database config
+          db_config = {
+              'host': os.getenv('DB_HOST'),
+              'port': os.getenv('DB_PORT', '5432'),
+              'database': os.getenv('DB_NAME'),
+              'user': os.getenv('DB_USER'),
+              'password': os.getenv('DB_PASSWORD'),
+          }
+
+          def debug_update():
+              conn = psycopg2.connect(**db_config)
+              cursor = conn.cursor()
+
+              # Get the top trading opportunity
+              cursor.execute("""
+                  SELECT symbol, position_type, entry_date, exit_date,
+                         entry_price, exit_price, holding_days, profit_percent, trade_score
+                  FROM trading_opportunities
+                  ORDER BY trade_score DESC
+                  LIMIT 1
+              """)
+
+              row = cursor.fetchone()
+              if row:
+                  print(f"📊 Testing update for: {row[0]} {row[1]} {row[2]} -> {row[3]}")
+                  print(f"   Entry price: {row[4]} (type: {type(row[4])})")
+                  print(f"   Exit price: {row[5]} (type: {type(row[5])})")
+
+                  # Try the exact update query used in the job
+                  test_entry_price = float(row[4])
+                  test_exit_price = float(row[5])
+
+                  print(f"   Float entry price: {test_entry_price}")
+                  print(f"   Float exit price: {test_exit_price}")
+
+                  # Test the WHERE clause
+                  cursor.execute("""
+                      SELECT COUNT(*) FROM trading_opportunities
+                      WHERE symbol = %s
+                        AND position_type = %s
+                        AND entry_date = %s
+                        AND exit_date = %s
+                        AND ABS(entry_price - %s) < 0.01
+                        AND ABS(exit_price - %s) < 0.01
+                  """, (row[0], row[1], row[2], row[3], test_entry_price, test_exit_price))
+
+                  count = cursor.fetchone()[0]
+                  print(f"   WHERE clause matches: {count} rows")
+
+                  if count == 0:
+                      print("   ❌ No rows match! Let's try simpler WHERE clause...")
+
+                      # Try without price matching
+                      cursor.execute("""
+                          SELECT COUNT(*) FROM trading_opportunities
+                          WHERE symbol = %s
+                            AND position_type = %s
+                            AND entry_date = %s
+                            AND exit_date = %s
+                      """, (row[0], row[1], row[2], row[3]))
+
+                      count2 = cursor.fetchone()[0]
+                      print(f"   Without price matching: {count2} rows")
+
+                  # Calculate simple astrological data
+                  entry_date = row[2]
+                  julian_day = swe.julday(entry_date.year, entry_date.month, entry_date.day, 12.0)
+                  result, ret = swe.calc_ut(julian_day, swe.SUN)
+
+                  if ret >= 0:
+                      sun_longitude = result[0]
+                      print(f"   ✅ Swiss Ephemeris working - Sun at {sun_longitude:.2f}°")
+
+                      # Try a simple update without price matching
+                      test_data = {'sun_longitude': sun_longitude, 'test': True}
+
+                      cursor.execute("""
+                          UPDATE trading_opportunities
+                          SET entry_planetary_data = %s,
+                              astro_analyzed_at = NOW()
+                          WHERE symbol = %s
+                            AND position_type = %s
+                            AND entry_date = %s
+                            AND exit_date = %s
+                      """, (json.dumps(test_data), row[0], row[1], row[2], row[3]))
+
+                      updated_rows = cursor.rowcount
+                      print(f"   Update result: {updated_rows} rows affected")
+
+                      if updated_rows > 0:
+                          conn.commit()
+                          print("   ✅ Update successful! Checking result...")
+
+                          cursor.execute("""
+                              SELECT entry_planetary_data
+                              FROM trading_opportunities
+                              WHERE symbol = %s AND position_type = %s
+                                AND entry_date = %s AND exit_date = %s
+                          """, (row[0], row[1], row[2], row[3]))
+
+                          result = cursor.fetchone()
+                          if result and result[0]:
+                              print(f"   ✅ Data stored: {result[0]}")
+                          else:
+                              print("   ❌ No data found after update")
+                      else:
+                          print("   ❌ Update failed - no rows affected")
+                          conn.rollback()
+                  else:
+                      print("   ❌ Swiss Ephemeris calculation failed")
+
+              cursor.close()
+              conn.close()
+
+          if __name__ == "__main__":
+              import os
+              debug_update()
+          EOF
+
+          python3 debug_update.py
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+
+      restartPolicy: Never
+  backoffLimit: 1

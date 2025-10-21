@@ -1,0 +1,442 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: regenerate-trading-opportunities-5pct
+  namespace: time-series-indexing
+  labels:
+    app: trading-opportunity-analyzer
+    component: regenerate-opportunities
+    type: data-analysis
+spec:
+  # Keep job for 24 hours after completion
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: trading-opportunity-analyzer
+        component: regenerate-opportunities
+    spec:
+      containers:
+      - name: trading-analyzer
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "🔄 Regenerating Trading Opportunities with 5% Minimum Profit Threshold"
+          echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          # Install system dependencies
+          apt-get update && apt-get install -y \
+            libpq-dev \
+            gcc \
+            curl \
+            wget \
+            && rm -rf /var/lib/apt/lists/*
+
+          # Install Python dependencies
+          pip install --no-cache-dir \
+            psycopg2-binary \
+            pandas \
+            numpy \
+            pyyaml \
+            yfinance
+
+          # Create working directory
+          mkdir -p /app/backend/{src,config,scripts}
+          cd /app/backend
+
+          # Create updated trading config with 5% minimum
+          cat > config/trading_config.yaml << 'EOF'
+          # Trading Opportunity Analyzer Configuration - Updated for 5% minimum profit
+
+          # Analysis Parameters
+          analysis:
+            symbols:
+              - "CRUDE_OIL_WTI"
+              - "CRUDE_OIL_BRENT"
+            start_date: null
+            end_date: null
+            top_trades_count: 200  # Increased to find more opportunities
+
+          # Trading Rules - Updated with 5% minimum profit
+          trading_rules:
+            min_holding_days: 3
+            max_holding_days: 30
+            min_profit_percent: 5.0  # NEW: 5% minimum profit threshold
+            max_unrealized_loss_percent: 50.0
+
+            entry_signals:
+              min_price_movement_percent: 2.0
+              use_moving_averages: false
+              use_rsi: false
+              use_volume_analysis: false
+
+          # Position Types
+          position_types:
+            analyze_long: true
+            analyze_short: true
+
+          # Output Configuration
+          output:
+            format: "json"
+            include_trade_details: true
+            include_chart_data: false
+            save_to_database: true
+
+          # Database Configuration
+          database:
+            results_table: "trading_opportunities"
+            create_table: true
+
+          # Performance Configuration
+          performance:
+            batch_size: 1000
+            use_multiprocessing: false
+            max_workers: 4
+
+          # Logging
+          logging:
+            level: "INFO"
+            format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            include_trade_logs: true
+          EOF
+
+          # Create simplified trading analyzer that includes the 5% threshold
+          cat > scripts/regenerate_opportunities.py << 'EOF'
+          #!/usr/bin/env python3
+          import os
+          import sys
+          import json
+          import logging
+          import pandas as pd
+          import numpy as np
+          import psycopg2
+          import yfinance as yf
+          from datetime import datetime, timedelta
+          from typing import List, Dict, Any
+          import yaml
+
+          logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+          logger = logging.getLogger(__name__)
+
+          class TradingOpportunityRegenerator:
+              def __init__(self):
+                  self.db_config = {
+                      'host': os.getenv('DB_HOST'),
+                      'port': os.getenv('DB_PORT', '5432'),
+                      'database': os.getenv('DB_NAME'),
+                      'user': os.getenv('DB_USER'),
+                      'password': os.getenv('DB_PASSWORD'),
+                  }
+
+                  # Load config
+                  with open('config/trading_config.yaml', 'r') as f:
+                      self.config = yaml.safe_load(f)
+
+              def clear_existing_opportunities(self) -> None:
+                  """Clear existing trading opportunities to regenerate with new criteria."""
+                  try:
+                      conn = psycopg2.connect(**self.db_config)
+                      cursor = conn.cursor()
+
+                      cursor.execute("DELETE FROM trading_opportunities")
+                      deleted_count = cursor.rowcount
+
+                      conn.commit()
+                      cursor.close()
+                      conn.close()
+                      logger.info(f"✅ Cleared {deleted_count} existing trading opportunities")
+
+                  except Exception as e:
+                      logger.error(f"❌ Error clearing opportunities: {e}")
+                      raise
+
+              def get_market_data(self, symbol: str) -> pd.DataFrame:
+                  """Get market data for analysis."""
+                  try:
+                      yahoo_symbol = "CL=F" if symbol == "CRUDE_OIL_WTI" else "BZ=F"
+
+                      # Get 30 years of data
+                      end_date = datetime.now()
+                      start_date = end_date - timedelta(days=30*365)
+
+                      logger.info(f"Fetching data for {symbol} ({yahoo_symbol}) from {start_date.date()} to {end_date.date()}")
+
+                      ticker = yf.Ticker(yahoo_symbol)
+                      data = ticker.history(start=start_date, end=end_date)
+
+                      if data.empty:
+                          logger.error(f"No data retrieved for {symbol}")
+                          return pd.DataFrame()
+
+                      logger.info(f"Retrieved {len(data)} price records for {symbol}")
+                      return data
+
+                  except Exception as e:
+                      logger.error(f"Error fetching data for {symbol}: {e}")
+                      return pd.DataFrame()
+
+              def analyze_opportunities(self, symbol: str, price_data: pd.DataFrame) -> List[Dict[str, Any]]:
+                  """Analyze opportunities with 5% minimum profit threshold."""
+                  opportunities = []
+                  trading_rules = self.config['trading_rules']
+
+                  min_holding_days = trading_rules['min_holding_days']
+                  max_holding_days = trading_rules['max_holding_days']
+                  min_profit_percent = trading_rules['min_profit_percent']  # 5.0%
+                  max_loss_percent = trading_rules['max_unrealized_loss_percent']
+
+                  logger.info(f"Analyzing {symbol} with {min_profit_percent}% minimum profit threshold")
+
+                  data = price_data.copy()
+                  data['date'] = data.index
+
+                  total_combinations = 0
+                  profitable_trades = 0
+
+                  for entry_idx in range(len(data) - min_holding_days):
+                      entry_row = data.iloc[entry_idx]
+                      entry_date = entry_row['date']
+                      entry_price = entry_row['Close']
+
+                      max_exit_idx = min(entry_idx + max_holding_days, len(data) - 1)
+
+                      for exit_idx in range(entry_idx + min_holding_days, max_exit_idx + 1):
+                          exit_row = data.iloc[exit_idx]
+                          exit_date = exit_row['date']
+                          exit_price = exit_row['Close']
+                          holding_days = (exit_date - entry_date).days
+
+                          total_combinations += 1
+
+                          # Analyze both long and short opportunities
+                          for position_type in ['long', 'short']:
+                              if position_type == 'long':
+                                  profit_percent = ((exit_price - entry_price) / entry_price) * 100
+                              else:  # short
+                                  profit_percent = ((entry_price - exit_price) / entry_price) * 100
+
+                              # Check if meets minimum profit threshold
+                              if profit_percent >= min_profit_percent:
+                                  # Calculate risk metrics
+                                  trade_data = data.iloc[entry_idx:exit_idx + 1]
+                                  max_drawdown = self.calculate_max_drawdown(trade_data, entry_price, position_type)
+
+                                  # Check if drawdown is acceptable
+                                  if max_drawdown <= max_loss_percent:
+                                      # Calculate trade score
+                                      daily_return = profit_percent / holding_days
+                                      trade_score = profit_percent + (daily_return * 2) - (max_drawdown * 0.5)
+
+                                      # Limit extreme profits (likely data errors)
+                                      if profit_percent <= 500:  # Cap at 500%
+                                          opportunities.append({
+                                              'symbol': symbol,
+                                              'position_type': position_type,
+                                              'entry_date': entry_date.date(),
+                                              'exit_date': exit_date.date(),
+                                              'entry_price': float(entry_price),
+                                              'exit_price': float(exit_price),
+                                              'holding_days': holding_days,
+                                              'profit_percent': float(profit_percent),
+                                              'max_drawdown': float(max_drawdown),
+                                              'trade_score': float(trade_score)
+                                          })
+                                          profitable_trades += 1
+
+                  logger.info(f"Found {profitable_trades} opportunities from {total_combinations} combinations for {symbol}")
+                  return opportunities
+
+              def calculate_max_drawdown(self, trade_data: pd.DataFrame, entry_price: float, position_type: str) -> float:
+                  """Calculate maximum drawdown during trade period."""
+                  if len(trade_data) == 0:
+                      return 0.0
+
+                  max_loss = 0.0
+                  peak_profit = 0.0
+
+                  for _, row in trade_data.iterrows():
+                      current_price = row['Close']
+
+                      if position_type == 'long':
+                          current_profit = ((current_price - entry_price) / entry_price) * 100
+                      else:  # short
+                          current_profit = ((entry_price - current_price) / entry_price) * 100
+
+                      peak_profit = max(peak_profit, current_profit)
+                      current_drawdown = peak_profit - current_profit
+                      max_loss = max(max_loss, current_drawdown)
+
+                  return max_loss
+
+              def store_opportunities(self, opportunities: List[Dict[str, Any]]) -> None:
+                  """Store opportunities in database."""
+                  try:
+                      conn = psycopg2.connect(**self.db_config)
+                      cursor = conn.cursor()
+
+                      # Insert opportunities
+                      for opp in opportunities:
+                          cursor.execute("""
+                              INSERT INTO trading_opportunities (
+                                  symbol, position_type, entry_date, exit_date,
+                                  entry_price, exit_price, holding_days, profit_percent,
+                                  trade_score
+                              ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                          """, (
+                              opp['symbol'],
+                              opp['position_type'],
+                              opp['entry_date'],
+                              opp['exit_date'],
+                              opp['entry_price'],
+                              opp['exit_price'],
+                              opp['holding_days'],
+                              opp['profit_percent'],
+                              opp['trade_score']
+                          ))
+
+                      conn.commit()
+                      cursor.close()
+                      conn.close()
+                      logger.info(f"✅ Stored {len(opportunities)} opportunities in database")
+
+                  except Exception as e:
+                      logger.error(f"❌ Error storing opportunities: {e}")
+                      if conn:
+                          conn.rollback()
+                      raise
+
+              def run_regeneration(self):
+                  """Run complete regeneration process."""
+                  logger.info("🔄 Starting trading opportunity regeneration with 5% minimum profit")
+
+                  # Clear existing opportunities
+                  self.clear_existing_opportunities()
+
+                  all_opportunities = []
+                  symbols = self.config['analysis']['symbols']
+
+                  for symbol in symbols:
+                      logger.info(f"Processing {symbol}...")
+
+                      # Get market data
+                      price_data = self.get_market_data(symbol)
+                      if price_data.empty:
+                          continue
+
+                      # Analyze opportunities
+                      opportunities = self.analyze_opportunities(symbol, price_data)
+                      all_opportunities.extend(opportunities)
+
+                  # Store all opportunities
+                  if all_opportunities:
+                      # Remove overlapping opportunities
+                      unique_opportunities = self.remove_overlapping_opportunities(all_opportunities)
+                      self.store_opportunities(unique_opportunities)
+
+                      logger.info(f"🎉 Regeneration complete! Found {len(unique_opportunities)} unique opportunities")
+                  else:
+                      logger.warning("⚠️ No opportunities found")
+
+              def remove_overlapping_opportunities(self, opportunities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                  """Remove overlapping opportunities to ensure diversified trades."""
+                  # Sort by trade score (best first)
+                  sorted_opps = sorted(opportunities, key=lambda x: x['trade_score'], reverse=True)
+
+                  selected = []
+                  used_periods = []
+
+                  for opp in sorted_opps:
+                      entry_date = opp['entry_date']
+                      exit_date = opp['exit_date']
+
+                      # Check for overlap with already selected opportunities
+                      overlaps = False
+                      for used_entry, used_exit in used_periods:
+                          if (entry_date <= used_exit and exit_date >= used_entry):
+                              overlaps = True
+                              break
+
+                      if not overlaps:
+                          selected.append(opp)
+                          used_periods.append((entry_date, exit_date))
+
+                  logger.info(f"Selected {len(selected)} non-overlapping opportunities from {len(opportunities)} total")
+                  return selected
+
+          def main():
+              regenerator = TradingOpportunityRegenerator()
+              regenerator.run_regeneration()
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          # Make script executable
+          chmod +x scripts/regenerate_opportunities.py
+
+          # Run the regeneration
+          echo "🔄 Starting trading opportunity regeneration..."
+          python3 scripts/regenerate_opportunities.py
+
+          echo "✅ Trading opportunity regeneration completed!"
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+
+        volumeMounts:
+        - name: tmp-storage
+          mountPath: /tmp
+
+      volumes:
+      - name: tmp-storage
+        emptyDir:
+          sizeLimit: 2Gi
+
+      # Tolerate CriticalAddonsOnly taint
+      tolerations:
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoExecute"
+
+      restartPolicy: Never
+
+  # Retry failed jobs up to 2 times
+  backoffLimit: 2
+
+  # Set maximum run time to 2 hours
+  activeDeadlineSeconds: 7200

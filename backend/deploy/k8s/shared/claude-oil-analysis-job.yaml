@@ -1,0 +1,401 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: claude-oil-astro-analysis
+  namespace: time-series-indexing
+  labels:
+    app: claude-oil-analysis
+    component: llm-astrological-analysis
+    type: market-analysis
+spec:
+  # Keep job for 48 hours after completion
+  ttlSecondsAfterFinished: 172800
+  template:
+    metadata:
+      labels:
+        app: claude-oil-analysis
+        component: llm-astrological-analysis
+    spec:
+      containers:
+      - name: claude-oil-analyzer
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "🤖 Starting Claude AI Oil Futures Astrological Analysis"
+          echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          # Install system dependencies
+          apt-get update && apt-get install -y \
+            libpq-dev \
+            gcc \
+            curl \
+            wget \
+            && rm -rf /var/lib/apt/lists/*
+
+          # Install Python dependencies
+          pip install --no-cache-dir \
+            psycopg2-binary \
+            pandas \
+            numpy \
+            anthropic \
+            requests
+
+          # Create working directory structure
+          mkdir -p /app/backend/{src/llm_analyzer/{core,prompts,models},scripts/llm_analysis}
+          cd /app/backend
+
+          # Create __init__ files
+          touch src/llm_analyzer/__init__.py
+          touch src/llm_analyzer/core/__init__.py
+          touch src/llm_analyzer/prompts/__init__.py
+          touch src/llm_analyzer/models/__init__.py
+
+          # Create the complete LLM analyzer system
+          echo "📁 Setting up LLM analyzer system..."
+
+          # Create data models
+          cat > src/llm_analyzer/models/trading_data.py << 'EOF'
+          from dataclasses import dataclass
+          from datetime import date
+          from typing import Dict, Any, Optional
+
+          @dataclass
+          class TradingOpportunity:
+              id: int
+              symbol: str
+              position_type: str
+              entry_date: date
+              exit_date: date
+              entry_price: float
+              exit_price: float
+              holding_days: int
+              profit_percent: float
+              trade_score: float
+              astrological_score: float
+              entry_astro_description: str
+              exit_astro_description: str
+              entry_planetary_data: Dict[str, Any]
+              exit_planetary_data: Dict[str, Any]
+              astro_analysis_summary: str
+              claude_analysis: Optional[str] = None
+          EOF
+
+          # Create data retriever
+          cat > src/llm_analyzer/core/data_retriever.py << 'EOF'
+          import os
+          import logging
+          import psycopg2
+          import json
+          from typing import List, Dict, Any
+          from ..models.trading_data import TradingOpportunity
+
+          logger = logging.getLogger(__name__)
+
+          class TradingDataRetriever:
+              def __init__(self):
+                  self.db_config = {
+                      'host': os.getenv('DB_HOST'),
+                      'port': os.getenv('DB_PORT', '5432'),
+                      'database': os.getenv('DB_NAME'),
+                      'user': os.getenv('DB_USER'),
+                      'password': os.getenv('DB_PASSWORD'),
+                  }
+
+              def get_all_trading_opportunities(self) -> List[TradingOpportunity]:
+                  try:
+                      conn = psycopg2.connect(**self.db_config)
+                      cursor = conn.cursor()
+
+                      cursor.execute("""
+                          SELECT
+                              id, symbol, position_type, entry_date, exit_date,
+                              entry_price, exit_price, holding_days, profit_percent, trade_score,
+                              astrological_score, entry_astro_description, exit_astro_description,
+                              entry_planetary_data, exit_planetary_data, astro_analysis_summary,
+                              claude_analysis
+                          FROM trading_opportunities
+                          WHERE astro_analyzed_at IS NOT NULL
+                          ORDER BY astrological_score DESC
+                      """)
+
+                      opportunities = []
+                      for row in cursor.fetchall():
+                          opportunity = TradingOpportunity(
+                              id=row[0], symbol=row[1], position_type=row[2],
+                              entry_date=row[3], exit_date=row[4],
+                              entry_price=float(row[5]), exit_price=float(row[6]),
+                              holding_days=row[7], profit_percent=float(row[8]), trade_score=float(row[9]),
+                              astrological_score=float(row[10]),
+                              entry_astro_description=row[11] or "",
+                              exit_astro_description=row[12] or "",
+                              entry_planetary_data=row[13] or {},
+                              exit_planetary_data=row[14] or {},
+                              astro_analysis_summary=row[15] or "",
+                              claude_analysis=row[16]
+                          )
+                          opportunities.append(opportunity)
+
+                      cursor.close()
+                      conn.close()
+                      logger.info(f"Retrieved {len(opportunities)} trading opportunities")
+                      return opportunities
+
+                  except Exception as e:
+                      logger.error(f"Error retrieving trading opportunities: {e}")
+                      raise
+          EOF
+
+          # Create Claude analyzer
+          cat > src/llm_analyzer/core/claude_analyzer.py << 'EOF'
+          import os
+          import logging
+          from typing import List
+          import anthropic
+          from ..models.trading_data import TradingOpportunity
+
+          logger = logging.getLogger(__name__)
+
+          class ClaudeAnalyzer:
+              def __init__(self):
+                  self.api_key = os.getenv('ANTHROPIC_API_KEY')
+                  if not self.api_key:
+                      raise ValueError("ANTHROPIC_API_KEY environment variable required")
+
+                  self.client = anthropic.Anthropic(api_key=self.api_key)
+                  logger.info("✅ Claude API client initialized")
+
+              def analyze_oil_trading_patterns(self, opportunities: List[TradingOpportunity]) -> str:
+                  prompt = self.generate_comprehensive_prompt(opportunities)
+
+                  try:
+                      logger.info("🤖 Querying Claude for oil trading astrological analysis...")
+
+                      message = self.client.messages.create(
+                          model="claude-3-5-sonnet-20241022",
+                          max_tokens=4000,
+                          messages=[{"role": "user", "content": prompt}]
+                      )
+
+                      response = message.content[0].text if message.content else "No response from Claude"
+                      logger.info(f"✅ Received Claude analysis: {len(response)} characters")
+                      return response
+
+                  except Exception as e:
+                      logger.error(f"❌ Error querying Claude API: {e}")
+                      raise
+
+              def generate_comprehensive_prompt(self, opportunities: List[TradingOpportunity]) -> str:
+                  long_trades = [opp for opp in opportunities if opp.position_type == 'long']
+                  short_trades = [opp for opp in opportunities if opp.position_type == 'short']
+
+                  prompt_parts = [
+                      "# Comprehensive Astrological Analysis for Oil Futures Trading Profitability",
+                      "",
+                      "You are an expert financial astrologer analyzing real profitable oil futures trades.",
+                      "Identify specific astrological patterns that correlate with oil trading success.",
+                      "",
+                      f"## Dataset: {len(opportunities)} Profitable Oil Trades",
+                      f"- Long Positions: {len(long_trades)} trades",
+                      f"- Short Positions: {len(short_trades)} trades",
+                      f"- Average Profit: {sum(opp.profit_percent for opp in opportunities) / len(opportunities):.1f}%",
+                      "",
+                      "## Long Positions (Oil Price Rising):",
+                      ""
+                  ]
+
+                  for i, trade in enumerate(long_trades[:10], 1):
+                      prompt_parts.extend([
+                          f"### Trade {i}: {trade.symbol} LONG - {trade.profit_percent:.1f}% profit",
+                          f"**Astrological Score:** {trade.astrological_score}/100",
+                          f"**Entry:** {trade.entry_astro_description}",
+                          f"**Exit:** {trade.exit_astro_description}",
+                          ""
+                      ])
+
+                  prompt_parts.extend([
+                      "## Short Positions (Oil Price Falling):",
+                      ""
+                  ])
+
+                  for i, trade in enumerate(short_trades[:10], 1):
+                      prompt_parts.extend([
+                          f"### Trade {i}: {trade.symbol} SHORT - {trade.profit_percent:.1f}% profit",
+                          f"**Astrological Score:** {trade.astrological_score}/100",
+                          f"**Entry:** {trade.entry_astro_description}",
+                          f"**Exit:** {trade.exit_astro_description}",
+                          ""
+                      ])
+
+                  prompt_parts.extend([
+                      "## Analysis Questions:",
+                      "",
+                      "1. **What astrological signs and planetary positions appear most frequently in profitable oil trades?**",
+                      "2. **Which lunar phases correlate with the highest oil trading success rates?**",
+                      "3. **What planetary aspects (trines, squares, conjunctions) signal profitable oil market movements?**",
+                      "4. **Are there seasonal or zodiacal patterns that favor oil price increases vs. decreases?**",
+                      "5. **Do Mars aspects correlate with oil market volatility and profit opportunities?**",
+                      "6. **Which astrological conditions signal optimal entry and exit timing for oil trades?**",
+                      "",
+                      "## Deliverables:",
+                      "",
+                      "### A. Top 10 Astrological Indicators for Oil Trading",
+                      "Rank the most reliable astrological signals for profitable oil trades.",
+                      "",
+                      "### B. Practical Trading Rules",
+                      "Create specific, actionable rules like:",
+                      "- 'Enter long oil positions when [specific astrological condition]'",
+                      "- 'Exit oil trades when [lunar phase/planetary aspect occurs]'",
+                      "",
+                      "### C. Oil Trading Calendar",
+                      "Identify optimal astrological timing for oil market entries and exits.",
+                      "",
+                      "### D. Risk Management",
+                      "Astrological warning signs for increased volatility or trend reversals.",
+                      "",
+                      "Focus on actionable insights that oil futures traders can immediately implement!"
+                  ])
+
+                  return "\\n".join(prompt_parts)
+          EOF
+
+          # Create main analysis script
+          cat > scripts/llm_analysis/run_claude_analysis.py << 'EOF'
+          #!/usr/bin/env python3
+          import os
+          import sys
+          import logging
+          from datetime import datetime
+          from pathlib import Path
+
+          # Add backend/src to path
+          backend_src = Path(__file__).parent.parent.parent / "src"
+          sys.path.insert(0, str(backend_src))
+
+          from llm_analyzer.core.data_retriever import TradingDataRetriever
+          from llm_analyzer.core.claude_analyzer import ClaudeAnalyzer
+
+          logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+          logger = logging.getLogger(__name__)
+
+          def main():
+              logger.info("🌟 Starting Claude AI Oil Trading Astrological Analysis")
+
+              # Initialize components
+              data_retriever = TradingDataRetriever()
+              claude_analyzer = ClaudeAnalyzer()
+
+              # Get trading data
+              logger.info("📊 Retrieving trading opportunities...")
+              opportunities = data_retriever.get_all_trading_opportunities()
+
+              if not opportunities:
+                  logger.error("❌ No trading opportunities found")
+                  return
+
+              logger.info(f"📈 Analyzing {len(opportunities)} profitable oil trades")
+
+              # Perform Claude analysis
+              analysis = claude_analyzer.analyze_oil_trading_patterns(opportunities)
+
+              # Save results
+              timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+              output_file = f"/tmp/claude_oil_astro_analysis_{timestamp}.md"
+
+              with open(output_file, 'w', encoding='utf-8') as f:
+                  f.write("# Claude AI Analysis: Astrological Patterns in Oil Futures Trading\\n\\n")
+                  f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\\n\\n")
+                  f.write(f"Dataset: {len(opportunities)} profitable oil trades\\n\\n")
+                  f.write(analysis)
+
+              # Display results
+              print("\\n" + "="*100)
+              print("🤖 CLAUDE AI OIL TRADING ASTROLOGICAL ANALYSIS COMPLETED")
+              print("="*100)
+              print(f"📊 Analyzed {len(opportunities)} profitable oil futures trades")
+              print(f"💾 Results saved to: {output_file}")
+              print("\\n🎯 CLAUDE'S ASTROLOGICAL INSIGHTS:")
+              print("="*100)
+              print(analysis)
+              print("="*100)
+              print(f"\\n📋 Full analysis saved to: {output_file}")
+
+              logger.info("✅ Claude analysis completed successfully")
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          # Make scripts executable
+          chmod +x scripts/llm_analysis/run_claude_analysis.py
+
+          # Run the Claude analysis
+          echo "🤖 Starting Claude AI analysis of oil trading astrological patterns..."
+          python3 scripts/llm_analysis/run_claude_analysis.py
+
+          echo "✅ Claude AI oil trading analysis completed!"
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: anthropic-api-key
+
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+
+        volumeMounts:
+        - name: tmp-storage
+          mountPath: /tmp
+
+      volumes:
+      - name: tmp-storage
+        emptyDir:
+          sizeLimit: 2Gi
+
+      # Tolerate CriticalAddonsOnly taint
+      tolerations:
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoExecute"
+
+      restartPolicy: Never
+
+  # Retry failed jobs up to 2 times
+  backoffLimit: 2
+
+  # Set maximum run time to 1 hour
+  activeDeadlineSeconds: 3600
