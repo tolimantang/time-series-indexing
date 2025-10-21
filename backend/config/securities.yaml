@@ -94,6 +94,32 @@ securities:
       db_symbol: "ETH"
       enabled: false
 
+  # Commodities and Futures
+  commodities:
+    - symbol: "CL=F"      # WTI Crude Oil Futures
+      name: "WTI Crude Oil Futures"
+      yahoo_symbol: "CL=F"
+      db_symbol: "CRUDE_OIL_WTI"
+      enabled: true
+
+    - symbol: "BZ=F"      # Brent Crude Oil Futures
+      name: "Brent Crude Oil Futures"
+      yahoo_symbol: "BZ=F"
+      db_symbol: "CRUDE_OIL_BRENT"
+      enabled: true
+
+    - symbol: "GC=F"      # Gold Futures
+      name: "Gold Futures"
+      yahoo_symbol: "GC=F"
+      db_symbol: "GOLD"
+      enabled: false  # Available but disabled by default
+
+    - symbol: "SI=F"      # Silver Futures
+      name: "Silver Futures"
+      yahoo_symbol: "SI=F"
+      db_symbol: "SILVER"
+      enabled: false  # Available but disabled by default
+
 # Encoding Configuration
 encoding:
   # How many days of data to fetch (for technical indicators)

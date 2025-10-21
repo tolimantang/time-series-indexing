@@ -1,0 +1,684 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: trading-opportunity-analysis
+  namespace: time-series-indexing
+  labels:
+    app: trading-analysis
+    component: opportunity-detection
+    type: market-analysis
+spec:
+  # Keep job for 24 hours after completion for log review
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: trading-analysis
+        component: opportunity-detection
+    spec:
+      containers:
+      - name: trading-analyzer
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "🎯 Starting Trading Opportunity Analysis"
+          echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          # Install system dependencies
+          apt-get update && apt-get install -y \
+            libpq-dev \
+            gcc \
+            curl \
+            git \
+            && rm -rf /var/lib/apt/lists/*
+
+          # Install Python dependencies
+          pip install --no-cache-dir \
+            psycopg2-binary \
+            pandas \
+            numpy \
+            pyyaml
+
+          # Create working directory structure matching backend
+          mkdir -p /app/backend/{src/trading_analyzer/core,config,scripts/trading}
+          cd /app/backend
+
+          # Create configuration file
+          cat > config/trading_config.yaml << 'EOF'
+          # Trading Opportunity Analyzer Configuration
+
+          # Analysis Parameters
+          analysis:
+            # Symbols to analyze
+            symbols:
+              - "CRUDE_OIL_WTI"
+              - "CRUDE_OIL_BRENT"
+
+            # Date range for analysis (null for all available data)
+            start_date: null
+            end_date: null
+
+            # Number of top trades to return per symbol
+            top_trades_count: 50
+
+          # Trading Rules
+          trading_rules:
+            # Position holding period constraints
+            min_holding_days: 3
+            max_holding_days: 30
+
+            # Risk management
+            max_unrealized_loss_percent: 50.0
+
+          # Position Types
+          position_types:
+            analyze_long: true
+            analyze_short: true
+
+          # Output Configuration
+          output:
+            format: "json"
+            include_trade_details: true
+            save_to_database: true
+
+          # Database Configuration
+          database:
+            results_table: "trading_opportunities"
+            create_table: true
+
+          # Logging
+          logging:
+            level: "INFO"
+            format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+          EOF
+
+          # Create simplified __init__.py files (without imports that cause circular dependencies)
+          cat > src/trading_analyzer/__init__.py << 'EOF'
+          """Trading Opportunity Analyzer"""
+          __version__ = "1.0.0"
+          EOF
+
+          cat > src/trading_analyzer/core/__init__.py << 'EOF'
+          """Core modules for trading opportunity analysis."""
+          EOF
+
+          # Create data access module
+          cat > src/trading_analyzer/core/data_access.py << 'EOF'
+          import psycopg2
+          import pandas as pd
+          from datetime import datetime
+          from typing import Dict, List, Optional, Any
+          import logging
+          import os
+
+          logger = logging.getLogger(__name__)
+
+          class MarketDataAccess:
+              def __init__(self, db_config: Dict[str, str] = None):
+                  self.db_config = db_config or self._get_db_config_from_env()
+                  self._test_connection()
+
+              def _get_db_config_from_env(self) -> Dict[str, str]:
+                  config = {
+                      'host': os.getenv('DB_HOST'),
+                      'port': os.getenv('DB_PORT', '5432'),
+                      'database': os.getenv('DB_NAME'),
+                      'user': os.getenv('DB_USER'),
+                      'password': os.getenv('DB_PASSWORD'),
+                  }
+                  missing = [k for k, v in config.items() if not v]
+                  if missing:
+                      raise ValueError(f"Missing required environment variables: {missing}")
+                  return config
+
+              def _test_connection(self) -> None:
+                  try:
+                      conn = psycopg2.connect(**self.db_config)
+                      cursor = conn.cursor()
+                      cursor.execute("SELECT 1")
+                      cursor.close()
+                      conn.close()
+                      logger.info("✅ Database connection successful")
+                  except Exception as e:
+                      logger.error(f"❌ Database connection failed: {e}")
+                      raise
+
+              def get_market_data(self, symbol: str, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> pd.DataFrame:
+                  logger.info(f"Retrieving market data for {symbol}")
+                  conn = None
+                  try:
+                      conn = psycopg2.connect(**self.db_config)
+                      base_query = """
+                          SELECT trade_date, open_price, high_price, low_price,
+                                 close_price, adjusted_close, volume, daily_return
+                          FROM market_data
+                          WHERE symbol = %s
+                      """
+                      params = [symbol]
+
+                      if start_date:
+                          base_query += " AND trade_date >= %s"
+                          params.append(start_date.date())
+                      if end_date:
+                          base_query += " AND trade_date <= %s"
+                          params.append(end_date.date())
+
+                      base_query += " ORDER BY trade_date ASC"
+
+                      df = pd.read_sql_query(base_query, conn, params=params, parse_dates=['trade_date'])
+
+                      if df.empty:
+                          logger.warning(f"No data found for symbol {symbol}")
+                          return pd.DataFrame()
+
+                      df.set_index('trade_date', inplace=True)
+                      df.rename(columns={
+                          'open_price': 'open', 'high_price': 'high', 'low_price': 'low',
+                          'close_price': 'close', 'adjusted_close': 'adj_close'
+                      }, inplace=True)
+
+                      logger.info(f"Retrieved {len(df)} records for {symbol}")
+                      return df
+
+                  except Exception as e:
+                      logger.error(f"Error retrieving data for {symbol}: {e}")
+                      raise
+                  finally:
+                      if conn:
+                          conn.close()
+
+              def save_trading_opportunities(self, opportunities: List[Dict[str, Any]], table_name: str = "trading_opportunities") -> None:
+                  if not opportunities:
+                      return
+
+                  conn = None
+                  cursor = None
+                  try:
+                      conn = psycopg2.connect(**self.db_config)
+                      cursor = conn.cursor()
+
+                      create_table_query = f"""
+                          CREATE TABLE IF NOT EXISTS {table_name} (
+                              id SERIAL PRIMARY KEY,
+                              symbol VARCHAR(25) NOT NULL,
+                              position_type VARCHAR(10) NOT NULL,
+                              entry_date DATE NOT NULL,
+                              exit_date DATE NOT NULL,
+                              entry_price DECIMAL(12,4) NOT NULL,
+                              exit_price DECIMAL(12,4) NOT NULL,
+                              holding_days INTEGER NOT NULL,
+                              profit_percent DECIMAL(8,4) NOT NULL,
+                              max_unrealized_gain_percent DECIMAL(8,4),
+                              max_unrealized_loss_percent DECIMAL(8,4),
+                              max_drawdown_from_peak DECIMAL(8,4),
+                              peak_profit_date DATE,
+                              peak_profit_percent DECIMAL(8,4),
+                              trade_score DECIMAL(10,4),
+                              analysis_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                              UNIQUE(symbol, position_type, entry_date, exit_date)
+                          )
+                      """
+                      cursor.execute(create_table_query)
+
+                      insert_query = f"""
+                          INSERT INTO {table_name} (
+                              symbol, position_type, entry_date, exit_date, entry_price, exit_price,
+                              holding_days, profit_percent, max_unrealized_gain_percent,
+                              max_unrealized_loss_percent, max_drawdown_from_peak, peak_profit_date,
+                              peak_profit_percent, trade_score
+                          ) VALUES %s
+                          ON CONFLICT (symbol, position_type, entry_date, exit_date)
+                          DO UPDATE SET
+                              profit_percent = EXCLUDED.profit_percent,
+                              trade_score = EXCLUDED.trade_score,
+                              analysis_date = NOW()
+                      """
+
+                      records = []
+                      for opp in opportunities:
+                          record = (
+                              opp['symbol'], opp['position_type'], opp['entry_date'], opp['exit_date'],
+                              opp['entry_price'], opp['exit_price'], opp['holding_days'],
+                              opp['profit_percent'], opp['max_unrealized_gain_percent'],
+                              opp['max_unrealized_loss_percent'], opp['max_drawdown_from_peak'],
+                              opp['peak_profit_date'], opp['peak_profit_percent'], opp['trade_score']
+                          )
+                          records.append(record)
+
+                      from psycopg2.extras import execute_values
+                      execute_values(cursor, insert_query, records)
+                      conn.commit()
+                      logger.info(f"✅ Saved {len(opportunities)} trading opportunities to {table_name}")
+
+                  except Exception as e:
+                      logger.error(f"❌ Error saving trading opportunities: {e}")
+                      if conn:
+                          conn.rollback()
+                      raise
+                  finally:
+                      if cursor:
+                          cursor.close()
+                      if conn:
+                          conn.close()
+          EOF
+
+          # Create self-contained trading analyzer script
+          cat > scripts/trading/standalone_trading_analysis.py << 'EOF'
+          #!/usr/bin/env python3
+          import sys
+          import os
+          import yaml
+          import json
+          import logging
+          import pandas as pd
+          import psycopg2
+          from datetime import datetime
+          from dataclasses import dataclass
+          from typing import List, Dict, Any, Optional
+
+          # Self-contained MarketDataAccess class
+          class MarketDataAccess:
+              def __init__(self):
+                  self.db_config = {
+                      'host': os.getenv('DB_HOST'),
+                      'port': os.getenv('DB_PORT', '5432'),
+                      'database': os.getenv('DB_NAME'),
+                      'user': os.getenv('DB_USER'),
+                      'password': os.getenv('DB_PASSWORD'),
+                  }
+                  missing = [k for k, v in self.db_config.items() if not v]
+                  if missing:
+                      raise ValueError(f"Missing required environment variables: {missing}")
+                  self._test_connection()
+
+              def _test_connection(self) -> None:
+                  try:
+                      conn = psycopg2.connect(**self.db_config)
+                      cursor = conn.cursor()
+                      cursor.execute("SELECT 1")
+                      cursor.close()
+                      conn.close()
+                      logger.info("✅ Database connection successful")
+                  except Exception as e:
+                      logger.error(f"❌ Database connection failed: {e}")
+                      raise
+
+              def get_market_data(self, symbol: str) -> pd.DataFrame:
+                  logger.info(f"Retrieving market data for {symbol}")
+                  conn = None
+                  try:
+                      conn = psycopg2.connect(**self.db_config)
+                      query = """
+                          SELECT trade_date, close_price
+                          FROM market_data
+                          WHERE symbol = %s
+                          ORDER BY trade_date ASC
+                      """
+                      df = pd.read_sql_query(query, conn, params=[symbol], parse_dates=['trade_date'])
+
+                      if df.empty:
+                          logger.warning(f"No data found for symbol {symbol}")
+                          return pd.DataFrame()
+
+                      df.set_index('trade_date', inplace=True)
+                      df.rename(columns={'close_price': 'close'}, inplace=True)
+
+                      logger.info(f"Retrieved {len(df)} records for {symbol}")
+                      return df
+
+                  except Exception as e:
+                      logger.error(f"Error retrieving data for {symbol}: {e}")
+                      raise
+                  finally:
+                      if conn:
+                          conn.close()
+
+              def save_trading_opportunities(self, opportunities: List[Dict[str, Any]]) -> None:
+                  if not opportunities:
+                      return
+
+                  conn = None
+                  cursor = None
+                  try:
+                      conn = psycopg2.connect(**self.db_config)
+                      cursor = conn.cursor()
+
+                      # Create table
+                      cursor.execute("""
+                          CREATE TABLE IF NOT EXISTS trading_opportunities (
+                              id SERIAL PRIMARY KEY,
+                              symbol VARCHAR(25) NOT NULL,
+                              position_type VARCHAR(10) NOT NULL,
+                              entry_date DATE NOT NULL,
+                              exit_date DATE NOT NULL,
+                              entry_price DECIMAL(12,4) NOT NULL,
+                              exit_price DECIMAL(12,4) NOT NULL,
+                              holding_days INTEGER NOT NULL,
+                              profit_percent DECIMAL(8,4) NOT NULL,
+                              trade_score DECIMAL(10,4),
+                              analysis_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                              UNIQUE(symbol, position_type, entry_date, exit_date)
+                          )
+                      """)
+
+                      # Insert opportunities
+                      insert_query = """
+                          INSERT INTO trading_opportunities (
+                              symbol, position_type, entry_date, exit_date, entry_price, exit_price,
+                              holding_days, profit_percent, trade_score
+                          ) VALUES %s
+                          ON CONFLICT (symbol, position_type, entry_date, exit_date)
+                          DO UPDATE SET
+                              profit_percent = EXCLUDED.profit_percent,
+                              trade_score = EXCLUDED.trade_score,
+                              analysis_date = NOW()
+                      """
+
+                      records = []
+                      for opp in opportunities:
+                          record = (
+                              opp['symbol'], opp['position_type'], opp['entry_date'], opp['exit_date'],
+                              opp['entry_price'], opp['exit_price'], opp['holding_days'],
+                              opp['profit_percent'], opp['trade_score']
+                          )
+                          records.append(record)
+
+                      from psycopg2.extras import execute_values
+                      execute_values(cursor, insert_query, records)
+                      conn.commit()
+                      logger.info(f"✅ Saved {len(opportunities)} trading opportunities")
+
+                  except Exception as e:
+                      logger.error(f"❌ Error saving trading opportunities: {e}")
+                      if conn:
+                          conn.rollback()
+                      raise
+                  finally:
+                      if cursor:
+                          cursor.close()
+                      if conn:
+                          conn.close()
+
+          logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+          logger = logging.getLogger(__name__)
+
+          @dataclass
+          class TradingOpportunity:
+              symbol: str
+              position_type: str
+              entry_date: datetime
+              exit_date: datetime
+              entry_price: float
+              exit_price: float
+              holding_days: int
+              profit_percent: float
+              trade_score: float
+              max_drawdown: float
+
+          def analyze_opportunities(symbol: str, data: pd.DataFrame, config: Dict[str, Any]) -> List[TradingOpportunity]:
+              """Optimized opportunity detection algorithm."""
+              rules = config['trading_rules']
+              min_days = int(rules['min_holding_days'])
+              max_days = int(rules['max_holding_days'])
+              max_loss = float(rules['max_unrealized_loss_percent'])
+
+              logger.info(f"Analysis parameters: min_days={min_days}, max_days={max_days}, max_loss={max_loss}%")
+
+              opportunities = []
+              data = data.copy()
+              data['date'] = data.index
+
+              logger.info(f"Analyzing {len(data)} price records for {symbol}")
+              total_combinations = 0
+
+              for entry_idx in range(len(data) - min_days):
+                  if entry_idx % 1000 == 0:
+                      progress = entry_idx / len(data) * 100
+                      logger.info(f"Progress: {entry_idx}/{len(data)} ({progress:.1f}%)")
+
+                  entry_row = data.iloc[entry_idx]
+                  entry_date = entry_row['date']
+                  entry_price = entry_row['close']
+
+                  max_exit_idx = min(entry_idx + max_days, len(data) - 1)
+
+                  for exit_idx in range(entry_idx + min_days, max_exit_idx + 1):
+                      total_combinations += 1
+                      exit_row = data.iloc[exit_idx]
+                      exit_date = exit_row['date']
+                      exit_price = exit_row['close']
+                      holding_days = (exit_date - entry_date).days
+
+                      # Analyze both long and short positions
+                      positions = []
+                      if config['position_types']['analyze_long']:
+                          long_profit = ((exit_price - entry_price) / entry_price) * 100
+                          if long_profit > 0:
+                              positions.append(('long', long_profit))
+
+                      if config['position_types']['analyze_short']:
+                          short_profit = ((entry_price - exit_price) / entry_price) * 100
+                          if short_profit > 0:
+                              positions.append(('short', short_profit))
+
+                      for position_type, profit in positions:
+                          # Quick risk check - analyze trade path
+                          trade_data = data.iloc[entry_idx:exit_idx + 1]
+                          max_drawdown = calculate_max_drawdown(trade_data, entry_price, position_type)
+
+                          if max_drawdown <= max_loss:
+                              score = profit + (profit / holding_days) * 2 - (max_drawdown * 0.5)
+
+                              opportunity = TradingOpportunity(
+                                  symbol=symbol,
+                                  position_type=position_type,
+                                  entry_date=entry_date,
+                                  exit_date=exit_date,
+                                  entry_price=entry_price,
+                                  exit_price=exit_price,
+                                  holding_days=holding_days,
+                                  profit_percent=profit,
+                                  trade_score=score,
+                                  max_drawdown=max_drawdown
+                              )
+                              opportunities.append(opportunity)
+
+              logger.info(f"Evaluated {total_combinations} trade combinations")
+              logger.info(f"Found {len(opportunities)} valid opportunities for {symbol}")
+
+              # Sort by score
+              opportunities.sort(key=lambda x: x.trade_score, reverse=True)
+              return opportunities
+
+          def calculate_max_drawdown(trade_data: pd.DataFrame, entry_price: float, position_type: str) -> float:
+              """Calculate maximum drawdown during the trade."""
+              max_drawdown = 0
+              peak_profit = 0
+
+              for _, row in trade_data.iterrows():
+                  current_price = row['close']
+
+                  if position_type == 'long':
+                      unrealized_profit = ((current_price - entry_price) / entry_price) * 100
+                  else:  # short
+                      unrealized_profit = ((entry_price - current_price) / entry_price) * 100
+
+                  if unrealized_profit > peak_profit:
+                      peak_profit = unrealized_profit
+
+                  if peak_profit > 0:
+                      drawdown = ((peak_profit - unrealized_profit) / peak_profit) * 100
+                      if drawdown > max_drawdown:
+                          max_drawdown = drawdown
+
+              return max_drawdown
+
+          def main():
+              # Load configuration
+              with open('config/trading_config.yaml', 'r') as f:
+                  config = yaml.safe_load(f)
+
+              symbols = config['analysis']['symbols']
+              top_count = int(config['analysis']['top_trades_count'])  # Ensure it's an integer
+
+              logger.info(f"🎯 Starting analysis for symbols: {symbols}")
+              logger.info(f"Top trades per symbol: {top_count}")
+              logger.info(f"Configuration loaded: {config}")
+
+              data_access = MarketDataAccess()
+              all_results = {}
+
+              for symbol in symbols:
+                  logger.info(f"📊 Analyzing {symbol}")
+
+                  try:
+                      # Get market data
+                      price_data = data_access.get_market_data(symbol)
+
+                      if price_data.empty:
+                          logger.warning(f"No data for {symbol}")
+                          continue
+
+                      # Analyze opportunities
+                      logger.info(f"Starting opportunity analysis for {symbol}")
+                      opportunities = analyze_opportunities(symbol, price_data, config)
+                      top_opportunities = opportunities[:top_count]
+                      logger.info(f"Analysis completed for {symbol}: found {len(opportunities)} total opportunities")
+
+                      if top_opportunities:
+                          # Print summary
+                          print(f"\n🎯 Top {len(top_opportunities)} Trading Opportunities for {symbol}")
+                          print("="*80)
+
+                          avg_profit = sum(opp.profit_percent for opp in top_opportunities) / len(top_opportunities)
+                          avg_days = sum(opp.holding_days for opp in top_opportunities) / len(top_opportunities)
+
+                          print(f"Average Profit: {avg_profit:.2f}%")
+                          print(f"Average Holding: {avg_days:.1f} days")
+                          print(f"Best Trade: {top_opportunities[0].profit_percent:.2f}% in {top_opportunities[0].holding_days} days")
+                          print("\nTop 10 Trades:")
+                          print("-" * 80)
+
+                          for i, opp in enumerate(top_opportunities[:10], 1):
+                              print(f"{i:2d}. {opp.position_type.upper():<5} "
+                                    f"{opp.entry_date.strftime('%Y-%m-%d')} → {opp.exit_date.strftime('%Y-%m-%d')} "
+                                    f"({opp.holding_days:2d}d) "
+                                    f"${opp.entry_price:7.2f} → ${opp.exit_price:7.2f} "
+                                    f"= {opp.profit_percent:6.2f}% "
+                                    f"(Score: {opp.trade_score:6.1f})")
+
+                          # Save to database
+                          opportunity_dicts = []
+                          for opp in top_opportunities:
+                              opportunity_dicts.append({
+                                  'symbol': opp.symbol,
+                                  'position_type': opp.position_type,
+                                  'entry_date': opp.entry_date.date(),
+                                  'exit_date': opp.exit_date.date(),
+                                  'entry_price': opp.entry_price,
+                                  'exit_price': opp.exit_price,
+                                  'holding_days': opp.holding_days,
+                                  'profit_percent': opp.profit_percent,
+                                  'max_unrealized_gain_percent': opp.profit_percent,
+                                  'max_unrealized_loss_percent': opp.max_drawdown,
+                                  'max_drawdown_from_peak': opp.max_drawdown,
+                                  'peak_profit_date': opp.exit_date.date(),
+                                  'peak_profit_percent': opp.profit_percent,
+                                  'trade_score': opp.trade_score
+                              })
+
+                          data_access.save_trading_opportunities(opportunity_dicts)
+                          all_results[symbol] = len(top_opportunities)
+
+                  except Exception as e:
+                      logger.error(f"Error analyzing {symbol}: {e}")
+
+              print(f"\n🎉 Analysis completed!")
+              for symbol, count in all_results.items():
+                  print(f"  {symbol}: {count} opportunities saved to database")
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          # Make script executable
+          chmod +x scripts/trading/standalone_trading_analysis.py
+
+          # Run the analysis
+          echo "🎯 Starting optimized trading opportunity detection..."
+          echo "📊 This will analyze all possible entry/exit combinations within the constraints..."
+
+          python3 scripts/trading/standalone_trading_analysis.py
+
+          echo "🎉 Trading opportunity analysis completed!"
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+
+        # Configuration via environment variables
+        - name: TOP_TRADES_COUNT
+          value: "50"
+        - name: MIN_HOLDING_DAYS
+          value: "3"
+        - name: MAX_HOLDING_DAYS
+          value: "30"
+        - name: MAX_UNREALIZED_LOSS
+          value: "50.0"
+
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "6Gi"
+            cpu: "2000m"
+
+        volumeMounts:
+        - name: tmp-storage
+          mountPath: /tmp
+
+      volumes:
+      - name: tmp-storage
+        emptyDir:
+          sizeLimit: 4Gi
+
+      # Tolerate CriticalAddonsOnly taint
+      tolerations:
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoExecute"
+
+      restartPolicy: Never
+
+  # Retry failed jobs up to 2 times
+  backoffLimit: 2
+
+  # Set maximum run time to 6 hours (comprehensive analysis can take time)
+  activeDeadlineSeconds: 21600

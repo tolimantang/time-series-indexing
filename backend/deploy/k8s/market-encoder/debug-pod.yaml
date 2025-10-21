@@ -9,7 +9,7 @@ spec:
   containers:
   - name: postgres-client
     image: postgres:15
-    command: ["sleep", "3600"]
+    command: ["sleep", "infinity"]
     env:
     - name: PGHOST
       valueFrom:
@@ -37,4 +37,4 @@ spec:
   - key: "CriticalAddonsOnly"
     operator: "Exists"
     effect: "NoSchedule"
-  restartPolicy: Never
+  restartPolicy: Always

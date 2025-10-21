@@ -1,0 +1,114 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: simple-symbol-fix
+  namespace: time-series-indexing
+  labels:
+    app: database-fix
+spec:
+  template:
+    metadata:
+      labels:
+        app: database-fix
+    spec:
+      containers:
+      - name: symbol-fix
+        image: postgres:15
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "🔧 Simple Symbol Column Fix"
+          echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          # Check current column length
+          echo "🔍 Checking current symbol column length..."
+          CURRENT_LENGTH=$(psql -tAc "SELECT character_maximum_length FROM information_schema.columns WHERE table_name = 'market_data' AND column_name = 'symbol';")
+          echo "Current symbol column length: $CURRENT_LENGTH"
+
+          if [ "$CURRENT_LENGTH" = "25" ]; then
+            echo "✅ Symbol column is already VARCHAR(25) - no change needed"
+          elif [ "$CURRENT_LENGTH" = "10" ]; then
+            echo "🔧 Extending symbol column from 10 to 25 characters..."
+            psql -c "ALTER TABLE market_data ALTER COLUMN symbol TYPE VARCHAR(25);"
+
+            # Verify the change
+            NEW_LENGTH=$(psql -tAc "SELECT character_maximum_length FROM information_schema.columns WHERE table_name = 'market_data' AND column_name = 'symbol';")
+            echo "✅ Symbol column length is now: $NEW_LENGTH"
+
+            if [ "$NEW_LENGTH" = "25" ]; then
+              echo "🎉 Column extension successful!"
+            else
+              echo "❌ Column extension failed"
+              exit 1
+            fi
+          else
+            echo "⚠️  Unexpected column length: $CURRENT_LENGTH"
+            echo "🔧 Setting to VARCHAR(25) anyway..."
+            psql -c "ALTER TABLE market_data ALTER COLUMN symbol TYPE VARCHAR(25);"
+
+            # Verify
+            NEW_LENGTH=$(psql -tAc "SELECT character_maximum_length FROM information_schema.columns WHERE table_name = 'market_data' AND column_name = 'symbol';")
+            echo "✅ Symbol column length is now: $NEW_LENGTH"
+          fi
+
+          # Test with a long symbol to make sure it works
+          echo "🧪 Testing with long symbol..."
+          psql -c "INSERT INTO market_data (symbol, trade_date, open_price, high_price, low_price, close_price, volume) VALUES ('TEST_LONG_SYMBOL_123', CURRENT_DATE, 100.0, 101.0, 99.0, 100.5, 1000) ON CONFLICT (symbol, trade_date) DO NOTHING;"
+
+          # Check if it was inserted
+          COUNT=$(psql -tAc "SELECT COUNT(*) FROM market_data WHERE symbol = 'TEST_LONG_SYMBOL_123';")
+          if [ "$COUNT" = "1" ]; then
+            echo "✅ Long symbol test successful"
+            # Clean up test data
+            psql -c "DELETE FROM market_data WHERE symbol = 'TEST_LONG_SYMBOL_123';"
+          else
+            echo "❌ Long symbol test failed"
+            exit 1
+          fi
+
+          echo "🎉 Symbol column fix completed successfully!"
+
+        env:
+        - name: PGHOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: PGPORT
+          value: "5432"
+        - name: PGDATABASE
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: PGUSER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+
+      tolerations:
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoExecute"
+
+      restartPolicy: Never
+  backoffLimit: 1

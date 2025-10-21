@@ -1,0 +1,78 @@
+# Trading Opportunity Analyzer Configuration
+
+# Analysis Parameters
+analysis:
+  # Symbols to analyze (supports multiple symbols)
+  symbols:
+    - "CRUDE_OIL_WTI"
+    - "CRUDE_OIL_BRENT"
+    # - "SPX"
+    # - "GOLD"
+
+  # Date range for analysis (null for all available data)
+  start_date: null  # Format: "YYYY-MM-DD" or null for earliest available
+  end_date: null    # Format: "YYYY-MM-DD" or null for latest available
+
+  # Number of top trades to return per symbol
+  top_trades_count: 50
+
+# Trading Rules
+trading_rules:
+  # Position holding period constraints
+  min_holding_days: 3
+  max_holding_days: 30
+
+  # Risk management
+  max_unrealized_loss_percent: 50.0  # Maximum retreat from peak gains
+
+  # Entry signal detection
+  entry_signals:
+    # Minimum price movement to consider as entry opportunity
+    min_price_movement_percent: 2.0
+
+    # Technical indicators for entry (future expansion)
+    use_moving_averages: false
+    use_rsi: false
+    use_volume_analysis: false
+
+# Position Types
+position_types:
+  analyze_long: true   # Analyze long positions
+  analyze_short: true  # Analyze short positions
+
+# Output Configuration
+output:
+  # Results format
+  format: "json"  # json, csv, both
+
+  # Include detailed trade analysis
+  include_trade_details: true
+
+  # Include price charts data for visualization
+  include_chart_data: false
+
+  # Save results to database
+  save_to_database: true
+
+# Database Configuration
+database:
+  # Results table name
+  results_table: "trading_opportunities"
+
+  # Create table if not exists
+  create_table: true
+
+# Performance Configuration
+performance:
+  # Batch size for processing large datasets
+  batch_size: 1000
+
+  # Parallel processing
+  use_multiprocessing: false
+  max_workers: 4
+
+# Logging
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  include_trade_logs: true
