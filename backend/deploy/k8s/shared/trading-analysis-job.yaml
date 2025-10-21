@@ -465,24 +465,25 @@ spec:
                               positions.append(('short', short_profit))
 
                       for position_type, profit in positions:
-                          # Quick risk check - analyze trade path
+                          # Risk check - analyze trade path for retreat from gains
                           trade_data = data.iloc[entry_idx:exit_idx + 1]
-                          max_drawdown = calculate_max_drawdown(trade_data, entry_price, position_type)
+                          max_retreat = calculate_max_retreat_from_gains(trade_data, entry_price, position_type)
 
-                          if max_drawdown <= max_loss:
-                              score = profit + (profit / holding_days) * 2 - (max_drawdown * 0.5)
+                          # Only include trades where retreat from gains doesn't exceed max_loss
+                          if max_retreat <= max_loss:
+                              score = profit + (profit / holding_days) * 2 - (max_retreat * 0.5)
 
                               opportunity = TradingOpportunity(
                                   symbol=symbol,
                                   position_type=position_type,
                                   entry_date=entry_date,
                                   exit_date=exit_date,
-                                  entry_price=entry_price,
-                                  exit_price=exit_price,
-                                  holding_days=holding_days,
-                                  profit_percent=profit,
-                                  trade_score=score,
-                                  max_drawdown=max_drawdown
+                                  entry_price=float(entry_price),  # Convert to Python float
+                                  exit_price=float(exit_price),    # Convert to Python float
+                                  holding_days=int(holding_days),  # Convert to Python int
+                                  profit_percent=float(profit),    # Convert to Python float
+                                  trade_score=float(score),        # Convert to Python float
+                                  max_drawdown=float(max_retreat)  # Convert to Python float
                               )
                               opportunities.append(opportunity)
 
@@ -493,28 +494,36 @@ spec:
               opportunities.sort(key=lambda x: x.trade_score, reverse=True)
               return opportunities
 
-          def calculate_max_drawdown(trade_data: pd.DataFrame, entry_price: float, position_type: str) -> float:
-              """Calculate maximum drawdown during the trade."""
-              max_drawdown = 0
-              peak_profit = 0
+          def calculate_max_retreat_from_gains(trade_data: pd.DataFrame, entry_price: float, position_type: str) -> float:
+              """
+              Calculate maximum retreat from unrealized gains during the trade.
+              Returns the maximum percentage that unrealized gains retreated from their peak.
+
+              Example: If gains peak at 10% and later drop to 5%, retreat is 50% (5% loss / 10% peak gains).
+              """
+              max_retreat_percent = 0
+              peak_gains = 0
 
               for _, row in trade_data.iterrows():
-                  current_price = row['close']
+                  current_price = float(row['close'])  # Convert to Python float
 
                   if position_type == 'long':
-                      unrealized_profit = ((current_price - entry_price) / entry_price) * 100
+                      unrealized_gains_percent = ((current_price - entry_price) / entry_price) * 100
                   else:  # short
-                      unrealized_profit = ((entry_price - current_price) / entry_price) * 100
+                      unrealized_gains_percent = ((entry_price - current_price) / entry_price) * 100
 
-                  if unrealized_profit > peak_profit:
-                      peak_profit = unrealized_profit
+                  # Only track retreats when we have positive gains
+                  if unrealized_gains_percent > 0:
+                      if unrealized_gains_percent > peak_gains:
+                          peak_gains = unrealized_gains_percent
 
-                  if peak_profit > 0:
-                      drawdown = ((peak_profit - unrealized_profit) / peak_profit) * 100
-                      if drawdown > max_drawdown:
-                          max_drawdown = drawdown
+                      # Calculate retreat from peak gains
+                      if peak_gains > 0:
+                          retreat_percent = ((peak_gains - unrealized_gains_percent) / peak_gains) * 100
+                          if retreat_percent > max_retreat_percent:
+                              max_retreat_percent = retreat_percent
 
-              return max_drawdown
+              return max_retreat_percent
 
           def main():
               # Load configuration
@@ -574,20 +583,15 @@ spec:
                           opportunity_dicts = []
                           for opp in top_opportunities:
                               opportunity_dicts.append({
-                                  'symbol': opp.symbol,
-                                  'position_type': opp.position_type,
+                                  'symbol': str(opp.symbol),
+                                  'position_type': str(opp.position_type),
                                   'entry_date': opp.entry_date.date(),
                                   'exit_date': opp.exit_date.date(),
-                                  'entry_price': opp.entry_price,
-                                  'exit_price': opp.exit_price,
-                                  'holding_days': opp.holding_days,
-                                  'profit_percent': opp.profit_percent,
-                                  'max_unrealized_gain_percent': opp.profit_percent,
-                                  'max_unrealized_loss_percent': opp.max_drawdown,
-                                  'max_drawdown_from_peak': opp.max_drawdown,
-                                  'peak_profit_date': opp.exit_date.date(),
-                                  'peak_profit_percent': opp.profit_percent,
-                                  'trade_score': opp.trade_score
+                                  'entry_price': float(opp.entry_price),
+                                  'exit_price': float(opp.exit_price),
+                                  'holding_days': int(opp.holding_days),
+                                  'profit_percent': float(opp.profit_percent),
+                                  'trade_score': float(opp.trade_score)
                               })
 
                           data_access.save_trading_opportunities(opportunity_dicts)
