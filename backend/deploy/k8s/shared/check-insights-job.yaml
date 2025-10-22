@@ -1,0 +1,161 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: check-insights
+  namespace: time-series-indexing
+  labels:
+    app: check-insights
+    component: database-query
+    type: verification
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: check-insights
+        component: database-query
+    spec:
+      containers:
+      - name: database-checker
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "🔍 Checking Astrological Insights Database"
+
+          # Install dependencies
+          apt-get update && apt-get install -y libpq-dev postgresql-client gcc && rm -rf /var/lib/apt/lists/*
+          pip install --no-cache-dir psycopg2-binary
+
+          # Create database checker script
+          cat > check_insights.py << 'EOF'
+          import psycopg2
+          import os
+          from datetime import date
+
+          def main():
+              print("🔍 Checking astrological insights database...")
+
+              db_config = {
+                  'host': os.getenv('DB_HOST'),
+                  'port': os.getenv('DB_PORT', '5432'),
+                  'database': os.getenv('DB_NAME'),
+                  'user': os.getenv('DB_USER'),
+                  'password': os.getenv('DB_PASSWORD'),
+              }
+
+              try:
+                  conn = psycopg2.connect(**db_config)
+                  cursor = conn.cursor()
+
+                  # Check insights table
+                  cursor.execute("SELECT COUNT(*) FROM astrological_insights;")
+                  insights_count = cursor.fetchone()[0]
+                  print(f"📊 Total insights stored: {insights_count}")
+
+                  if insights_count > 0:
+                      cursor.execute("""
+                          SELECT category, pattern_name, confidence_score, avg_profit, trade_count
+                          FROM astrological_insights
+                          ORDER BY confidence_score DESC NULLS LAST
+                          LIMIT 10;
+                      """)
+
+                      print("\n🎯 Top Insights:")
+                      print("-" * 80)
+                      for row in cursor.fetchall():
+                          category, pattern, confidence, profit, count = row
+                          confidence_str = f"{confidence:.1f}" if confidence else "N/A"
+                          profit_str = f"{profit:.1f}%" if profit else "N/A"
+                          print(f"📈 {category}: {pattern}")
+                          print(f"   Confidence: {confidence_str}, Avg Profit: {profit_str}, Trades: {count}")
+                          print()
+
+                  # Check daily conditions table
+                  cursor.execute("SELECT COUNT(*) FROM daily_astrological_conditions;")
+                  conditions_count = cursor.fetchone()[0]
+                  print(f"🌟 Daily conditions records: {conditions_count}")
+
+                  # Check recommendations table
+                  cursor.execute("SELECT COUNT(*) FROM daily_trading_recommendations;")
+                  recommendations_count = cursor.fetchone()[0]
+                  print(f"🎯 Trading recommendations: {recommendations_count}")
+
+                  # Check trading opportunities
+                  cursor.execute("SELECT COUNT(*) FROM trading_opportunities WHERE astro_analyzed_at IS NOT NULL;")
+                  astro_opportunities = cursor.fetchone()[0]
+                  print(f"📊 Trading opportunities with astro data: {astro_opportunities}")
+
+                  cursor.close()
+                  conn.close()
+
+                  print("\n✅ Database check completed successfully!")
+
+                  # Recommendations for next steps
+                  print("\n🎯 Next Steps:")
+                  if insights_count == 0:
+                      print("- Run batch analysis to generate insights")
+                  if conditions_count == 0:
+                      print("- Run daily conditions calculator")
+                  if recommendations_count == 0:
+                      print("- Run daily recommendations generator")
+                  if insights_count > 0 and conditions_count == 0:
+                      print("- Setup daily cron jobs for automated operation")
+
+              except Exception as e:
+                  print(f"❌ Error: {e}")
+                  raise
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          # Run the checker
+          python3 check_insights.py
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+      tolerations:
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoExecute"
+
+      restartPolicy: Never
+
+  backoffLimit: 2
+  activeDeadlineSeconds: 600

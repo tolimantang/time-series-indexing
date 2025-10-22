@@ -1,0 +1,234 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: setup-database-schema
+  namespace: time-series-indexing
+  labels:
+    app: setup-database-schema
+    component: database-setup
+    type: one-time-setup
+spec:
+  # Keep job for 24 hours after completion
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: setup-database-schema
+        component: database-setup
+    spec:
+      containers:
+      - name: database-schema-setup
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "🗄️ Setting up Astrological Insights Database Schema"
+          echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          # Install dependencies
+          apt-get update && apt-get install -y \
+            libpq-dev \
+            postgresql-client \
+            gcc \
+            && rm -rf /var/lib/apt/lists/*
+
+          pip install --no-cache-dir psycopg2-binary
+
+          # Create schema setup script
+          cat > setup_schema.py << 'EOF'
+          import psycopg2
+          import os
+
+          def main():
+              print("📊 Creating astrological insights database schema...")
+
+              db_config = {
+                  'host': os.getenv('DB_HOST'),
+                  'port': os.getenv('DB_PORT', '5432'),
+                  'database': os.getenv('DB_NAME'),
+                  'user': os.getenv('DB_USER'),
+                  'password': os.getenv('DB_PASSWORD'),
+              }
+
+              try:
+                  conn = psycopg2.connect(**db_config)
+                  cursor = conn.cursor()
+
+                  # Create astrological_insights table
+                  print("📊 Creating astrological_insights table...")
+                  cursor.execute("""
+                      CREATE TABLE IF NOT EXISTS astrological_insights (
+                          id SERIAL PRIMARY KEY,
+                          insight_type VARCHAR(50) NOT NULL,
+                          category VARCHAR(50) NOT NULL,
+                          pattern_name VARCHAR(100) NOT NULL,
+                          description TEXT NOT NULL,
+                          confidence_score DOUBLE PRECISION,
+                          success_rate DOUBLE PRECISION,
+                          avg_profit DOUBLE PRECISION,
+                          trade_count INTEGER,
+                          evidence JSONB,
+                          claude_analysis TEXT,
+                          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                          updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                      );
+                  """)
+
+                  cursor.execute("""
+                      CREATE INDEX IF NOT EXISTS idx_astrological_insights_category
+                      ON astrological_insights(category);
+                  """)
+
+                  cursor.execute("""
+                      CREATE INDEX IF NOT EXISTS idx_astrological_insights_confidence
+                      ON astrological_insights(confidence_score DESC);
+                  """)
+
+                  # Create daily_astrological_conditions table
+                  print("🌟 Creating daily_astrological_conditions table...")
+                  cursor.execute("""
+                      CREATE TABLE IF NOT EXISTS daily_astrological_conditions (
+                          id SERIAL PRIMARY KEY,
+                          trade_date DATE NOT NULL UNIQUE,
+                          planetary_positions JSONB NOT NULL,
+                          major_aspects JSONB,
+                          lunar_phase_name VARCHAR(50),
+                          lunar_phase_angle DOUBLE PRECISION,
+                          significant_events TEXT[],
+                          daily_score DOUBLE PRECISION,
+                          market_outlook TEXT,
+                          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                      );
+                  """)
+
+                  cursor.execute("""
+                      CREATE INDEX IF NOT EXISTS idx_daily_astro_conditions_date
+                      ON daily_astrological_conditions(trade_date);
+                  """)
+
+                  cursor.execute("""
+                      CREATE INDEX IF NOT EXISTS idx_daily_astro_conditions_score
+                      ON daily_astrological_conditions(daily_score DESC);
+                  """)
+
+                  # Create daily_trading_recommendations table
+                  print("🎯 Creating daily_trading_recommendations table...")
+                  cursor.execute("""
+                      CREATE TABLE IF NOT EXISTS daily_trading_recommendations (
+                          id SERIAL PRIMARY KEY,
+                          recommendation_date DATE NOT NULL,
+                          symbol VARCHAR(25) NOT NULL,
+                          recommendation_type VARCHAR(20) NOT NULL,
+                          confidence DOUBLE PRECISION NOT NULL,
+                          astrological_reasoning TEXT,
+                          supporting_insights INTEGER[],
+                          target_price DOUBLE PRECISION,
+                          stop_loss DOUBLE PRECISION,
+                          holding_period_days INTEGER,
+                          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                          UNIQUE(recommendation_date, symbol, recommendation_type)
+                      );
+                  """)
+
+                  cursor.execute("""
+                      CREATE INDEX IF NOT EXISTS idx_daily_recommendations_date
+                      ON daily_trading_recommendations(recommendation_date);
+                  """)
+
+                  cursor.execute("""
+                      CREATE INDEX IF NOT EXISTS idx_daily_recommendations_confidence
+                      ON daily_trading_recommendations(confidence DESC);
+                  """)
+
+                  conn.commit()
+
+                  # Verify tables were created
+                  cursor.execute("""
+                      SELECT table_name FROM information_schema.tables
+                      WHERE table_schema = 'public'
+                      AND table_name IN ('astrological_insights', 'daily_astrological_conditions', 'daily_trading_recommendations')
+                      ORDER BY table_name;
+                  """)
+
+                  tables = [row[0] for row in cursor.fetchall()]
+
+                  # Check if we have trading_opportunities table
+                  cursor.execute("""
+                      SELECT COUNT(*) FROM trading_opportunities WHERE astro_analyzed_at IS NOT NULL;
+                  """)
+                  opportunities_count = cursor.fetchone()[0]
+
+                  cursor.close()
+                  conn.close()
+
+                  print("✅ Database schema setup completed successfully!")
+                  print(f"📋 Tables created/verified: {', '.join(tables)}")
+                  print(f"📊 Trading opportunities with astro data: {opportunities_count}")
+
+                  print("\n🎯 Ready for next steps:")
+                  print("1. Run batch analysis to process all trading opportunities")
+                  print("2. Setup daily conditions and recommendations jobs")
+
+              except Exception as e:
+                  print(f"❌ Error: {e}")
+                  raise
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          # Run the schema setup
+          python3 setup_schema.py
+
+          echo "✅ Database schema setup completed!"
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+      # Tolerate CriticalAddonsOnly taint
+      tolerations:
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoExecute"
+
+      restartPolicy: Never
+
+  # Retry failed jobs up to 2 times
+  backoffLimit: 2
+
+  # Set maximum run time to 10 minutes
+  activeDeadlineSeconds: 600

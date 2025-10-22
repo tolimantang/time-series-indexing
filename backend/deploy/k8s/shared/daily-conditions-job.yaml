@@ -1,0 +1,283 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daily-conditions-calculator
+  namespace: time-series-indexing
+  labels:
+    app: daily-conditions
+    component: astrological-calculator
+    type: daily-job
+spec:
+  # Run daily at 6:00 AM UTC
+  schedule: "0 6 * * *"
+  timeZone: "UTC"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      # Keep job for 24 hours after completion
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app: daily-conditions
+            component: astrological-calculator
+        spec:
+          containers:
+          - name: daily-conditions-calculator
+            image: python:3.11-slim
+            command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              echo "🌟 Starting Daily Astrological Conditions Calculator"
+              echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+              # Install system dependencies
+              apt-get update && apt-get install -y \
+                libpq-dev \
+                gcc \
+                curl \
+                wget \
+                && rm -rf /var/lib/apt/lists/*
+
+              # Install Python dependencies
+              pip install --no-cache-dir \
+                psycopg2-binary \
+                pyephem \
+                requests
+
+              # Create working directory
+              mkdir -p /app/scripts
+              cd /app
+
+              # Create daily conditions calculator script
+              cat > scripts/daily_conditions.py << 'EOF'
+              #!/usr/bin/env python3
+              import os
+              import psycopg2
+              import json
+              import logging
+              from datetime import datetime, date
+              import ephem
+
+              logging.basicConfig(level=logging.INFO)
+              logger = logging.getLogger(__name__)
+
+              def calculate_planetary_positions(target_date):
+                  """Calculate basic planetary positions using PyEphem."""
+                  try:
+                      observer = ephem.Observer()
+                      observer.date = target_date.strftime('%Y/%m/%d')
+
+                      positions = {}
+
+                      # Calculate major planets
+                      planets = {
+                          'Sun': ephem.Sun(),
+                          'Moon': ephem.Moon(),
+                          'Mars': ephem.Mars(),
+                          'Jupiter': ephem.Jupiter(),
+                          'Saturn': ephem.Saturn()
+                      }
+
+                      for name, planet in planets.items():
+                          planet.compute(observer)
+                          # Convert to degrees
+                          longitude = float(planet.ra) * 180.0 / 3.14159
+                          positions[name] = {
+                              'longitude': longitude,
+                              'constellation': str(planet.constellation)
+                          }
+
+                      return positions
+                  except Exception as e:
+                      logger.error(f"Error calculating positions: {e}")
+                      return {}
+
+              def calculate_lunar_phase(target_date):
+                  """Calculate lunar phase."""
+                  try:
+                      observer = ephem.Observer()
+                      observer.date = target_date.strftime('%Y/%m/%d')
+
+                      moon = ephem.Moon()
+                      moon.compute(observer)
+
+                      # Get phase
+                      phase = moon.moon_phase
+
+                      if phase < 0.1:
+                          phase_name = "New Moon"
+                      elif phase < 0.4:
+                          phase_name = "Waxing Moon"
+                      elif phase < 0.6:
+                          phase_name = "Full Moon"
+                      else:
+                          phase_name = "Waning Moon"
+
+                      return {
+                          'phase_name': phase_name,
+                          'phase_angle': phase * 360,
+                          'illumination': phase * 100
+                      }
+                  except Exception as e:
+                      logger.error(f"Error calculating lunar phase: {e}")
+                      return {}
+
+              def calculate_daily_score(positions, lunar_phase):
+                  """Calculate simple daily score."""
+                  score = 50.0  # Base score
+
+                  try:
+                      # Boost for certain lunar phases
+                      phase_name = lunar_phase.get('phase_name', '')
+                      if 'Waxing' in phase_name:
+                          score += 15
+                      elif 'Full' in phase_name:
+                          score += 10
+                      elif 'New' in phase_name:
+                          score += 12
+
+                      # Simple planetary scoring
+                      if 'Jupiter' in positions:
+                          score += 5  # Jupiter generally positive
+
+                      return min(100, max(0, score))
+                  except:
+                      return 50.0
+
+              def main():
+                  logger.info("🌟 Calculating daily astrological conditions")
+
+                  # Database connection
+                  db_config = {
+                      'host': os.getenv('DB_HOST'),
+                      'port': os.getenv('DB_PORT', '5432'),
+                      'database': os.getenv('DB_NAME'),
+                      'user': os.getenv('DB_USER'),
+                      'password': os.getenv('DB_PASSWORD'),
+                  }
+
+                  target_date = date.today()
+                  logger.info(f"📅 Calculating conditions for {target_date}")
+
+                  # Calculate conditions
+                  positions = calculate_planetary_positions(target_date)
+                  lunar_phase = calculate_lunar_phase(target_date)
+                  daily_score = calculate_daily_score(positions, lunar_phase)
+
+                  # Determine market outlook
+                  if daily_score >= 70:
+                      market_outlook = 'bullish'
+                  elif daily_score <= 30:
+                      market_outlook = 'bearish'
+                  else:
+                      market_outlook = 'neutral'
+
+                  # Store in database
+                  try:
+                      conn = psycopg2.connect(**db_config)
+                      cursor = conn.cursor()
+
+                      cursor.execute("""
+                          INSERT INTO daily_astrological_conditions (
+                              trade_date, planetary_positions, lunar_phase_name,
+                              lunar_phase_angle, daily_score, market_outlook
+                          ) VALUES (%s, %s, %s, %s, %s, %s)
+                          ON CONFLICT (trade_date) DO UPDATE SET
+                              planetary_positions = EXCLUDED.planetary_positions,
+                              lunar_phase_name = EXCLUDED.lunar_phase_name,
+                              lunar_phase_angle = EXCLUDED.lunar_phase_angle,
+                              daily_score = EXCLUDED.daily_score,
+                              market_outlook = EXCLUDED.market_outlook,
+                              created_at = NOW()
+                      """, (
+                          target_date,
+                          json.dumps(positions),
+                          lunar_phase.get('phase_name'),
+                          lunar_phase.get('phase_angle'),
+                          daily_score,
+                          market_outlook
+                      ))
+
+                      conn.commit()
+                      cursor.close()
+                      conn.close()
+
+                      print("✅ Daily conditions calculated and stored successfully")
+                      print(f"📊 Date: {target_date}")
+                      print(f"🌟 Daily Score: {daily_score}/100")
+                      print(f"📈 Market Outlook: {market_outlook}")
+                      print(f"🌙 Lunar Phase: {lunar_phase.get('phase_name')}")
+
+                  except Exception as e:
+                      logger.error(f"❌ Database error: {e}")
+                      raise
+
+              if __name__ == "__main__":
+                  main()
+              EOF
+
+              # Run the daily conditions calculator
+              echo "🌟 Calculating today's astrological conditions..."
+              python3 scripts/daily_conditions.py
+
+              echo "✅ Daily conditions calculation completed!"
+
+            env:
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-host
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-name
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-user
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-password
+
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "250m"
+              limits:
+                memory: "1Gi"
+                cpu: "500m"
+
+            volumeMounts:
+            - name: tmp-storage
+              mountPath: /tmp
+
+          volumes:
+          - name: tmp-storage
+            emptyDir:
+              sizeLimit: 1Gi
+
+          # Tolerate CriticalAddonsOnly taint
+          tolerations:
+          - key: "CriticalAddonsOnly"
+            operator: "Exists"
+            effect: "NoSchedule"
+          - key: "CriticalAddonsOnly"
+            operator: "Exists"
+            effect: "NoExecute"
+
+          restartPolicy: Never
+
+      # Set maximum run time to 30 minutes
+      activeDeadlineSeconds: 1800

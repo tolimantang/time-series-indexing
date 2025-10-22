@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional
 
 from .data_retriever import TradingDataRetriever
 from .claude_analyzer import ClaudeAnalyzer
+from .batch_processor import BatchAstroProcessor
 from ..models.trading_data import TradingOpportunity
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ class OilTradingAstroAnalyzer:
         """Initialize analyzer with data retriever and Claude client."""
         self.data_retriever = TradingDataRetriever(db_config)
         self.claude_analyzer = ClaudeAnalyzer(claude_api_key)
+        self.batch_processor = BatchAstroProcessor()
 
     def run_comprehensive_analysis(
         self,
@@ -225,3 +227,22 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         except Exception as e:
             logger.error(f"❌ Error saving report: {e}")
             raise
+
+    def run_batch_analysis_all_opportunities(self, batch_size: int = 50) -> Dict[str, Any]:
+        """Run batch analysis on ALL trading opportunities and store insights in database."""
+        logger.info("🚀 Starting batch analysis of ALL trading opportunities")
+
+        summary = self.batch_processor.process_all_opportunities()
+
+        if 'error' in summary:
+            logger.error(f"❌ Batch analysis failed: {summary['error']}")
+            return summary
+
+        logger.info(f"✅ Batch analysis completed: {summary['opportunities_analyzed']} opportunities processed")
+        logger.info(f"💾 Extracted {summary['insights_extracted']} insights and stored in database")
+
+        return summary
+
+    def get_batch_processing_status(self) -> Dict[str, Any]:
+        """Get current status of batch processing and insights storage."""
+        return self.batch_processor.get_processing_status()

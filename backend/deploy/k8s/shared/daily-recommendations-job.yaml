@@ -1,0 +1,295 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daily-recommendations-generator
+  namespace: time-series-indexing
+  labels:
+    app: daily-recommendations
+    component: trading-recommendations
+    type: daily-job
+spec:
+  # Run daily at 6:30 AM UTC (after conditions calculator)
+  schedule: "30 6 * * *"
+  timeZone: "UTC"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      # Keep job for 24 hours after completion
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app: daily-recommendations
+            component: trading-recommendations
+        spec:
+          containers:
+          - name: daily-recommendations-generator
+            image: python:3.11-slim
+            command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              echo "🎯 Starting Daily Trading Recommendations Generator"
+              echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+              # Install system dependencies
+              apt-get update && apt-get install -y \
+                libpq-dev \
+                gcc \
+                curl \
+                wget \
+                && rm -rf /var/lib/apt/lists/*
+
+              # Install Python dependencies
+              pip install --no-cache-dir \
+                psycopg2-binary \
+                requests
+
+              # Create working directory
+              mkdir -p /app/scripts
+              cd /app
+
+              # Create daily recommendations generator script
+              cat > scripts/daily_recommendations.py << 'EOF'
+              #!/usr/bin/env python3
+              import os
+              import psycopg2
+              import json
+              import logging
+              from datetime import datetime, date
+
+              logging.basicConfig(level=logging.INFO)
+              logger = logging.getLogger(__name__)
+
+              def get_daily_conditions(target_date, cursor):
+                  """Get daily astrological conditions."""
+                  cursor.execute("""
+                      SELECT daily_score, market_outlook, lunar_phase_name
+                      FROM daily_astrological_conditions
+                      WHERE trade_date = %s
+                  """, (target_date,))
+
+                  row = cursor.fetchone()
+                  if row:
+                      return {
+                          'daily_score': row[0],
+                          'market_outlook': row[1],
+                          'lunar_phase': row[2]
+                      }
+                  return None
+
+              def get_insights(cursor):
+                  """Get relevant astrological insights."""
+                  cursor.execute("""
+                      SELECT category, description, confidence_score, avg_profit
+                      FROM astrological_insights
+                      WHERE confidence_score >= 50
+                      ORDER BY confidence_score DESC
+                      LIMIT 10
+                  """)
+
+                  insights = []
+                  for row in cursor.fetchall():
+                      insights.append({
+                          'category': row[0],
+                          'description': row[1],
+                          'confidence': row[2],
+                          'avg_profit': row[3]
+                      })
+                  return insights
+
+              def generate_recommendations(conditions, insights):
+                  """Generate trading recommendations."""
+                  recommendations = []
+                  oil_symbols = ['CL', 'BZ', 'HO', 'RB', 'NG']
+
+                  daily_score = conditions.get('daily_score', 50)
+                  market_outlook = conditions.get('market_outlook', 'neutral')
+
+                  for symbol in oil_symbols:
+                      # Simple recommendation logic
+                      if daily_score >= 70 and market_outlook in ['bullish', 'neutral']:
+                          rec_type = 'enter_long'
+                          confidence = min(85, daily_score + 10)
+                      elif daily_score <= 30 and market_outlook in ['bearish']:
+                          rec_type = 'enter_short'
+                          confidence = min(85, (100 - daily_score) + 10)
+                      elif market_outlook == 'volatile':
+                          rec_type = 'avoid'
+                          confidence = 60
+                      else:
+                          rec_type = 'hold'
+                          confidence = 40
+
+                      # Boost confidence if we have good insights
+                      if insights and len(insights) >= 3:
+                          confidence += 10
+
+                      reasoning = f"Daily score: {daily_score}/100, Market outlook: {market_outlook}"
+                      if conditions.get('lunar_phase'):
+                          reasoning += f", Lunar phase: {conditions['lunar_phase']}"
+
+                      recommendations.append({
+                          'symbol': symbol,
+                          'recommendation_type': rec_type,
+                          'confidence': min(90, confidence),
+                          'reasoning': reasoning,
+                          'holding_period': max(1, int(daily_score / 15))
+                      })
+
+                  return recommendations
+
+              def store_recommendations(target_date, recommendations, cursor):
+                  """Store recommendations in database."""
+                  stored_count = 0
+
+                  for rec in recommendations:
+                      try:
+                          cursor.execute("""
+                              INSERT INTO daily_trading_recommendations (
+                                  recommendation_date, symbol, recommendation_type, confidence,
+                                  astrological_reasoning, holding_period_days
+                              ) VALUES (%s, %s, %s, %s, %s, %s)
+                              ON CONFLICT (recommendation_date, symbol, recommendation_type) DO UPDATE SET
+                                  confidence = EXCLUDED.confidence,
+                                  astrological_reasoning = EXCLUDED.astrological_reasoning,
+                                  holding_period_days = EXCLUDED.holding_period_days,
+                                  created_at = NOW()
+                          """, (
+                              target_date,
+                              rec['symbol'],
+                              rec['recommendation_type'],
+                              rec['confidence'],
+                              rec['reasoning'],
+                              rec['holding_period']
+                          ))
+                          stored_count += 1
+                      except Exception as e:
+                          logger.warning(f"Failed to store recommendation for {rec['symbol']}: {e}")
+
+                  return stored_count
+
+              def main():
+                  logger.info("🎯 Generating daily trading recommendations")
+
+                  # Database connection
+                  db_config = {
+                      'host': os.getenv('DB_HOST'),
+                      'port': os.getenv('DB_PORT', '5432'),
+                      'database': os.getenv('DB_NAME'),
+                      'user': os.getenv('DB_USER'),
+                      'password': os.getenv('DB_PASSWORD'),
+                  }
+
+                  target_date = date.today()
+                  logger.info(f"📅 Generating recommendations for {target_date}")
+
+                  try:
+                      conn = psycopg2.connect(**db_config)
+                      cursor = conn.cursor()
+
+                      # Get daily conditions
+                      conditions = get_daily_conditions(target_date, cursor)
+                      if not conditions:
+                          logger.warning("⚠️ No daily conditions found, using defaults")
+                          conditions = {'daily_score': 50, 'market_outlook': 'neutral', 'lunar_phase': 'Unknown'}
+
+                      # Get insights
+                      insights = get_insights(cursor)
+
+                      # Generate recommendations
+                      recommendations = generate_recommendations(conditions, insights)
+
+                      # Store recommendations
+                      stored_count = store_recommendations(target_date, recommendations, cursor)
+
+                      conn.commit()
+                      cursor.close()
+                      conn.close()
+
+                      # Display results
+                      print("✅ Daily trading recommendations generated successfully")
+                      print(f"📅 Date: {target_date}")
+                      print(f"🌟 Daily Score: {conditions['daily_score']}/100")
+                      print(f"📈 Market Outlook: {conditions['market_outlook']}")
+                      print(f"💡 Insights Used: {len(insights)}")
+                      print(f"📊 Recommendations Generated: {len(recommendations)}")
+                      print(f"💾 Recommendations Stored: {stored_count}")
+
+                      print("\n🎯 Today's Recommendations:")
+                      for rec in recommendations:
+                          confidence_icon = "🟢" if rec['confidence'] >= 70 else "🟡" if rec['confidence'] >= 50 else "🔴"
+                          action_icon = {'enter_long': '📈', 'enter_short': '📉', 'hold': '⏸️', 'avoid': '⚠️'}.get(rec['recommendation_type'], '❓')
+                          print(f"{action_icon} {rec['symbol']}: {rec['recommendation_type'].upper()} {confidence_icon} {rec['confidence']:.0f}%")
+
+                  except Exception as e:
+                      logger.error(f"❌ Error generating recommendations: {e}")
+                      raise
+
+              if __name__ == "__main__":
+                  main()
+              EOF
+
+              # Run the daily recommendations generator
+              echo "🎯 Generating today's trading recommendations..."
+              python3 scripts/daily_recommendations.py
+
+              echo "✅ Daily recommendations generation completed!"
+
+            env:
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-host
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-name
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-user
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-password
+
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "250m"
+              limits:
+                memory: "1Gi"
+                cpu: "500m"
+
+            volumeMounts:
+            - name: tmp-storage
+              mountPath: /tmp
+
+          volumes:
+          - name: tmp-storage
+            emptyDir:
+              sizeLimit: 1Gi
+
+          # Tolerate CriticalAddonsOnly taint
+          tolerations:
+          - key: "CriticalAddonsOnly"
+            operator: "Exists"
+            effect: "NoSchedule"
+          - key: "CriticalAddonsOnly"
+            operator: "Exists"
+            effect: "NoExecute"
+
+          restartPolicy: Never
+
+      # Set maximum run time to 30 minutes
+      activeDeadlineSeconds: 1800
