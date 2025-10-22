@@ -92,6 +92,19 @@ def main():
         help='Display conditions without storing in database'
     )
 
+    parser.add_argument(
+        '--output-file',
+        type=str,
+        default=None,
+        help='Save conditions to JSON file instead of database (for local testing)'
+    )
+
+    parser.add_argument(
+        '--test-db',
+        action='store_true',
+        help='Test database connection only'
+    )
+
     args = parser.parse_args()
 
     setup_logging(args.verbose)
@@ -101,6 +114,16 @@ def main():
         # Initialize calculator
         logger.info("🌟 Initializing Daily Astrology Calculator...")
         calculator = DailyAstrologyCalculator()
+
+        # Test database connection if requested
+        if args.test_db:
+            logger.info("🔍 Testing database connection...")
+            if calculator.test_database_connection():
+                print("✅ Database connection successful!")
+                return 0
+            else:
+                print("❌ Database connection failed!")
+                return 1
 
         # Determine date range
         if args.start_date and args.end_date:
@@ -152,7 +175,15 @@ def main():
                 for event in conditions['significant_events']:
                     print(f"  - {event}")
 
-            if not args.display_only:
+            if args.output_file:
+                # Save to file
+                success = calculator.save_conditions_to_file(conditions, args.output_file)
+                if success:
+                    print(f"\n💾 Conditions saved to file: {args.output_file}")
+                else:
+                    print(f"\n❌ Failed to save conditions to file")
+                    return 1
+            elif not args.display_only:
                 # Store in database
                 success = calculator.store_daily_conditions(conditions)
                 if success:

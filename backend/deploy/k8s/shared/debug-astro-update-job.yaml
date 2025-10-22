@@ -23,11 +23,13 @@ spec:
           set -e
           echo "🔍 Debugging Astrological Data Update Issue"
 
-          # Install dependencies
-          apt-get update && apt-get install -y libpq-dev gcc && pip install psycopg2-binary pyswisseph
+          # Install dependencies efficiently
+          apt-get update && apt-get install -y libpq-dev postgresql-client gcc && rm -rf /var/lib/apt/lists/*
+          pip install --no-cache-dir psycopg2-binary pyswisseph
 
           # Create debug script
           cat > debug_update.py << 'EOF'
+          import os
           import psycopg2
           import json
           import swisseph as swe
@@ -148,7 +150,6 @@ spec:
               conn.close()
 
           if __name__ == "__main__":
-              import os
               debug_update()
           EOF
 

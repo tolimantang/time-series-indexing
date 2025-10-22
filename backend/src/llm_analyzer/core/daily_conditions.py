@@ -1,6 +1,72 @@
 """
 Daily astrological conditions calculator using Swiss Ephemeris.
 Calculates planetary positions and aspects for trading analysis.
+
+Usage Examples:
+
+1. LOCAL EXECUTION:
+   # Set environment variables first
+   export DB_HOST=your-db-host
+   export DB_NAME=your-db-name
+   export DB_USER=your-db-user
+   export DB_PASSWORD=your-db-password
+
+   # Run for today
+   python3 scripts/llm_analysis/run_daily_conditions.py
+
+   # Run for specific date
+   python3 scripts/llm_analysis/run_daily_conditions.py --date 2024-01-15
+
+   # Run for date range
+   python3 scripts/llm_analysis/run_daily_conditions.py --start-date 2024-01-01 --end-date 2024-01-31
+
+   # Display only (no database storage)
+   python3 scripts/llm_analysis/run_daily_conditions.py --display-only
+
+2. EKS/KUBERNETES EXECUTION:
+   # Apply the daily conditions cron job
+   kubectl apply -f deploy/k8s/shared/daily-conditions-job.yaml
+
+   # Run one-time job manually
+   kubectl create job manual-daily-conditions --from=cronjob/daily-conditions -n time-series-indexing
+
+   # Check job status
+   kubectl get jobs -n time-series-indexing
+
+   # View logs
+   kubectl logs job/manual-daily-conditions -n time-series-indexing
+
+3. LOCAL TESTING (No Database):
+   # Save to file for local testing
+   python3 scripts/llm_analysis/run_daily_conditions.py --output-file /tmp/conditions.json
+
+   # Test calculation only (display without storing)
+   python3 scripts/llm_analysis/run_daily_conditions.py --display-only
+
+   # Test database connection only
+   python3 scripts/llm_analysis/run_daily_conditions.py --test-db
+
+4. DEBUGGING:
+   # Test with verbose output
+   python3 scripts/llm_analysis/run_daily_conditions.py --verbose --display-only
+
+   # Verbose with file output
+   python3 scripts/llm_analysis/run_daily_conditions.py --verbose --output-file /tmp/debug_conditions.json
+
+5. DIRECT USAGE IN CODE:
+   ```python
+   from llm_analyzer.core.daily_conditions import DailyAstrologyCalculator
+   from datetime import date
+
+   calc = DailyAstrologyCalculator()
+   conditions = calc.calculate_daily_conditions(date.today())
+   success = calc.store_daily_conditions(conditions)
+   ```
+
+Troubleshooting:
+- If planetary_positions/major_aspects are NULL: Check JSON serialization and Swiss Ephemeris installation
+- If connection fails: Verify DB_* environment variables
+- If Swiss Ephemeris errors: Ensure pyswisseph is installed (pip install pyswisseph)
 """
 
 import os
@@ -53,6 +119,53 @@ class DailyAstrologyCalculator:
             swe.set_ephe_path(ephemeris_path)
 
         logger.info("✅ Daily Astrology Calculator initialized")
+
+    def validate_calculated_data(self, conditions: Dict[str, Any]) -> bool:
+        """Validate that calculated data is complete and serializable."""
+        try:
+            # Check required fields
+            required_fields = ['trade_date', 'planetary_positions', 'major_aspects']
+            for field in required_fields:
+                if field not in conditions:
+                    logger.error(f"❌ Missing required field: {field}")
+                    return False
+
+            # Check planetary positions
+            positions = conditions['planetary_positions']
+            if not isinstance(positions, dict) or len(positions) == 0:
+                logger.error(f"❌ Invalid planetary_positions: {type(positions)}, length: {len(positions)}")
+                return False
+
+            # Count valid positions
+            valid_positions = 0
+            for planet, data in positions.items():
+                if isinstance(data, dict) and 'error' not in data:
+                    valid_positions += 1
+
+            if valid_positions < 3:  # Should have at least Sun, Moon, Mercury
+                logger.warning(f"⚠️ Only {valid_positions} valid planetary positions")
+                return False
+
+            # Check major aspects
+            aspects = conditions['major_aspects']
+            if not isinstance(aspects, list):
+                logger.error(f"❌ Invalid major_aspects type: {type(aspects)}")
+                return False
+
+            # Test JSON serialization
+            try:
+                json.dumps(positions)
+                json.dumps(aspects)
+            except (TypeError, ValueError) as e:
+                logger.error(f"❌ JSON serialization failed: {e}")
+                return False
+
+            logger.debug(f"✅ Validation passed: {valid_positions} planets, {len(aspects)} aspects")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Validation error: {e}")
+            return False
 
     def calculate_planetary_positions(self, target_date: date) -> Dict[str, Any]:
         """Calculate planetary positions for a given date."""
@@ -324,8 +437,23 @@ class DailyAstrologyCalculator:
     def store_daily_conditions(self, conditions: Dict[str, Any]) -> bool:
         """Store daily conditions in database."""
         try:
+            # Validate data before storing
+            if not self.validate_calculated_data(conditions):
+                logger.error(f"❌ Data validation failed for {conditions.get('trade_date', 'unknown date')}")
+                return False
+
             conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
+
+            # Debug: Log what we're about to store
+            positions_json = json.dumps(conditions['planetary_positions'])
+            aspects_json = json.dumps(conditions['major_aspects'])
+
+            logger.debug(f"🔍 Storing for {conditions['trade_date']}:")
+            logger.debug(f"   Positions JSON length: {len(positions_json)} chars")
+            logger.debug(f"   Aspects JSON length: {len(aspects_json)} chars")
+            logger.debug(f"   Positions sample: {positions_json[:200]}...")
+            logger.debug(f"   Aspects count: {len(conditions['major_aspects'])}")
 
             cursor.execute("""
                 INSERT INTO daily_astrological_conditions (
@@ -343,14 +471,35 @@ class DailyAstrologyCalculator:
                     created_at = NOW()
             """, (
                 conditions['trade_date'],
-                json.dumps(conditions['planetary_positions']),
-                json.dumps(conditions['major_aspects']),
+                positions_json,
+                aspects_json,
                 conditions['lunar_phase_name'],
                 conditions['lunar_phase_angle'],
                 conditions['significant_events'],
                 conditions['daily_score'],
                 conditions['market_outlook']
             ))
+
+            # Verify the data was actually stored
+            cursor.execute("""
+                SELECT planetary_positions, major_aspects
+                FROM daily_astrological_conditions
+                WHERE trade_date = %s
+            """, (conditions['trade_date'],))
+
+            result = cursor.fetchone()
+            if result:
+                stored_positions, stored_aspects = result
+                if stored_positions and stored_aspects:
+                    logger.info(f"✅ Verified: Data stored successfully for {conditions['trade_date']}")
+                    logger.debug(f"   Stored positions: {len(str(stored_positions))} chars")
+                    logger.debug(f"   Stored aspects: {len(str(stored_aspects))} chars")
+                else:
+                    logger.warning(f"⚠️ Data appears to be NULL after storage for {conditions['trade_date']}")
+                    logger.warning(f"   stored_positions is None: {stored_positions is None}")
+                    logger.warning(f"   stored_aspects is None: {stored_aspects is None}")
+            else:
+                logger.error(f"❌ No data found after insertion for {conditions['trade_date']}")
 
             conn.commit()
             cursor.close()
@@ -361,6 +510,10 @@ class DailyAstrologyCalculator:
 
         except Exception as e:
             logger.error(f"❌ Error storing daily conditions: {e}")
+            if 'cursor' in locals():
+                cursor.close()
+            if 'conn' in locals():
+                conn.close()
             return False
 
     def calculate_and_store_date_range(self, start_date: date, end_date: date) -> Dict[str, Any]:
@@ -401,3 +554,43 @@ class DailyAstrologyCalculator:
 
         logger.info(f"✅ Date range processing completed: {processed_count}/{summary['total_days']} days processed")
         return summary
+
+    def save_conditions_to_file(self, conditions: Dict[str, Any], file_path: str) -> bool:
+        """Save daily conditions to a JSON file for local testing."""
+        try:
+            # Validate data first
+            if not self.validate_calculated_data(conditions):
+                logger.error(f"❌ Data validation failed for {conditions.get('trade_date', 'unknown date')}")
+                return False
+
+            # Convert date to string for JSON serialization
+            conditions_copy = conditions.copy()
+            conditions_copy['trade_date'] = str(conditions_copy['trade_date'])
+
+            # Write to file
+            with open(file_path, 'w') as f:
+                json.dump(conditions_copy, f, indent=2, default=str)
+
+            logger.info(f"💾 Saved conditions to file: {file_path}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Error saving to file: {e}")
+            return False
+
+    def test_database_connection(self) -> bool:
+        """Test database connection without storing data."""
+        try:
+            conn = psycopg2.connect(**self.db_config)
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1;")
+            result = cursor.fetchone()
+            cursor.close()
+            conn.close()
+
+            logger.info("✅ Database connection successful")
+            return True
+
+        except Exception as e:
+            logger.warning(f"⚠️ Database connection failed: {e}")
+            return False
