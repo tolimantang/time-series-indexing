@@ -46,14 +46,14 @@ spec:
               # Install Python dependencies
               pip install --no-cache-dir \
                 psycopg2-binary \
-                pyephem \
+                pyswisseph \
                 requests
 
               # Create working directory
               mkdir -p /app/scripts
               cd /app
 
-              # Create daily conditions calculator script
+              # Create daily conditions calculator script using Swiss Ephemeris
               cat > scripts/daily_conditions.py << 'EOF'
               #!/usr/bin/env python3
               import os
@@ -61,96 +61,200 @@ spec:
               import json
               import logging
               from datetime import datetime, date
-              import ephem
+              import swisseph as swe
 
-              logging.basicConfig(level=logging.INFO)
+              logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
               logger = logging.getLogger(__name__)
 
-              def calculate_planetary_positions(target_date):
-                  """Calculate basic planetary positions using PyEphem."""
-                  try:
-                      observer = ephem.Observer()
-                      observer.date = target_date.strftime('%Y/%m/%d')
+              # Planetary constants
+              PLANETS = {
+                  'Sun': swe.SUN,
+                  'Moon': swe.MOON,
+                  'Mercury': swe.MERCURY,
+                  'Venus': swe.VENUS,
+                  'Mars': swe.MARS,
+                  'Jupiter': swe.JUPITER,
+                  'Saturn': swe.SATURN,
+                  'Uranus': swe.URANUS,
+                  'Neptune': swe.NEPTUNE,
+                  'Pluto': swe.PLUTO
+              }
 
+              ZODIAC_SIGNS = [
+                  'Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
+                  'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'
+              ]
+
+              def calculate_planetary_positions(target_date):
+                  """Calculate planetary positions using Swiss Ephemeris."""
+                  try:
+                      jd = swe.julday(target_date.year, target_date.month, target_date.day, 12.0)
                       positions = {}
 
-                      # Calculate major planets
-                      planets = {
-                          'Sun': ephem.Sun(),
-                          'Moon': ephem.Moon(),
-                          'Mars': ephem.Mars(),
-                          'Jupiter': ephem.Jupiter(),
-                          'Saturn': ephem.Saturn()
-                      }
+                      for planet_name, planet_id in PLANETS.items():
+                          try:
+                              position_data = swe.calc_ut(jd, planet_id)
+                              longitude = position_data[0][0]
 
-                      for name, planet in planets.items():
-                          planet.compute(observer)
-                          # Convert to degrees
-                          longitude = float(planet.ra) * 180.0 / 3.14159
-                          positions[name] = {
-                              'longitude': longitude,
-                              'constellation': str(planet.constellation)
-                          }
+                              sign_index = int(longitude // 30)
+                              degree_in_sign = longitude % 30
 
+                              positions[planet_name] = {
+                                  'longitude': longitude,
+                                  'sign': ZODIAC_SIGNS[sign_index],
+                                  'degree_in_sign': degree_in_sign,
+                                  'formatted': f"{degree_in_sign:.1f}° {ZODIAC_SIGNS[sign_index]}"
+                              }
+                          except Exception as e:
+                              logger.warning(f"Error calculating {planet_name}: {e}")
+                              positions[planet_name] = {'error': str(e)}
+
+                      logger.info(f"Calculated positions for {len(positions)} planets")
                       return positions
                   except Exception as e:
-                      logger.error(f"Error calculating positions: {e}")
+                      logger.error(f"Error calculating planetary positions: {e}")
                       return {}
 
               def calculate_lunar_phase(target_date):
                   """Calculate lunar phase."""
                   try:
-                      observer = ephem.Observer()
-                      observer.date = target_date.strftime('%Y/%m/%d')
+                      jd = swe.julday(target_date.year, target_date.month, target_date.day, 12.0)
 
-                      moon = ephem.Moon()
-                      moon.compute(observer)
+                      sun_pos = swe.calc_ut(jd, swe.SUN)[0][0]
+                      moon_pos = swe.calc_ut(jd, swe.MOON)[0][0]
 
-                      # Get phase
-                      phase = moon.moon_phase
+                      phase_angle = (moon_pos - sun_pos) % 360
 
-                      if phase < 0.1:
+                      if phase_angle < 45:
                           phase_name = "New Moon"
-                      elif phase < 0.4:
+                      elif phase_angle < 135:
                           phase_name = "Waxing Moon"
-                      elif phase < 0.6:
+                      elif phase_angle < 225:
                           phase_name = "Full Moon"
                       else:
                           phase_name = "Waning Moon"
 
                       return {
+                          'phase_angle': phase_angle,
                           'phase_name': phase_name,
-                          'phase_angle': phase * 360,
-                          'illumination': phase * 100
+                          'illumination_percent': (1 - abs(180 - phase_angle) / 180) * 100,
+                          'is_new_moon': abs(phase_angle) < 15,
+                          'is_full_moon': abs(phase_angle - 180) < 15
                       }
                   except Exception as e:
                       logger.error(f"Error calculating lunar phase: {e}")
                       return {}
 
-              def calculate_daily_score(positions, lunar_phase):
-                  """Calculate simple daily score."""
-                  score = 50.0  # Base score
+              def calculate_major_aspects(positions):
+                  """Calculate major planetary aspects."""
+                  aspects = []
+                  aspect_orbs = {
+                      'conjunction': 8, 'opposition': 8, 'trine': 6, 'square': 6, 'sextile': 4
+                  }
+
+                  planet_names = [p for p in positions.keys() if 'error' not in positions[p]]
+
+                  for i, planet1 in enumerate(planet_names):
+                      for planet2 in planet_names[i+1:]:
+                          pos1 = positions[planet1]['longitude']
+                          pos2 = positions[planet2]['longitude']
+
+                          separation = abs(pos2 - pos1)
+                          if separation > 180:
+                              separation = 360 - separation
+
+                          for aspect_name, target_angle in [
+                              ('conjunction', 0), ('opposition', 180), ('trine', 120),
+                              ('square', 90), ('sextile', 60)
+                          ]:
+                              orb = aspect_orbs[aspect_name]
+                              target = target_angle if target_angle == 0 or separation <= 180 else 180
+
+                              if abs(separation - target) <= orb:
+                                  aspects.append({
+                                      'planet1': planet1,
+                                      'planet2': planet2,
+                                      'aspect': aspect_name,
+                                      'orb': abs(separation - target),
+                                      'exact': abs(separation - target) < 1,
+                                      'separating_angle': separation
+                                  })
+
+                  logger.info(f"Found {len(aspects)} major aspects")
+                  return aspects
+
+              def calculate_daily_score(positions, aspects, lunar_phase):
+                  """Calculate daily astrological score."""
+                  score = 50.0
 
                   try:
-                      # Boost for certain lunar phases
-                      phase_name = lunar_phase.get('phase_name', '')
-                      if 'Waxing' in phase_name:
-                          score += 15
-                      elif 'Full' in phase_name:
+                      # Lunar phase scoring
+                      if lunar_phase.get('phase_name') == 'Waxing Moon':
                           score += 10
-                      elif 'New' in phase_name:
-                          score += 12
+                      elif lunar_phase.get('phase_name') == 'Full Moon':
+                          score += 5
+                      elif lunar_phase.get('is_new_moon'):
+                          score += 8
 
-                      # Simple planetary scoring
-                      if 'Jupiter' in positions:
-                          score += 5  # Jupiter generally positive
+                      # Aspect scoring
+                      for aspect in aspects:
+                          if 'Mars' in [aspect['planet1'], aspect['planet2']]:
+                              if aspect['aspect'] in ['trine', 'sextile']:
+                                  score += 8
+                              elif aspect['aspect'] in ['square', 'opposition']:
+                                  score -= 5
 
-                      return min(100, max(0, score))
-                  except:
+                          if 'Jupiter' in [aspect['planet1'], aspect['planet2']]:
+                              if aspect['aspect'] in ['trine', 'sextile', 'conjunction']:
+                                  score += 6
+
+                          if aspect.get('exact', False):
+                              score += 2
+
+                      return max(0, min(100, round(score, 1)))
+                  except Exception as e:
+                      logger.warning(f"Error calculating score: {e}")
                       return 50.0
 
+              def determine_market_outlook(daily_score, aspects):
+                  """Determine market outlook."""
+                  try:
+                      challenging = len([a for a in aspects if a['aspect'] in ['square', 'opposition']])
+                      harmonious = len([a for a in aspects if a['aspect'] in ['trine', 'sextile']])
+                      mars_activity = len([a for a in aspects if 'Mars' in [a['planet1'], a['planet2']]])
+
+                      if daily_score >= 70:
+                          return 'bullish'
+                      elif daily_score <= 30:
+                          return 'bearish'
+                      elif mars_activity >= 3 or challenging > harmonious + 2:
+                          return 'volatile'
+                      else:
+                          return 'neutral'
+                  except:
+                      return 'neutral'
+
+              def get_significant_events(aspects, lunar_phase):
+                  """Get significant astrological events."""
+                  events = []
+                  try:
+                      # Exact aspects
+                      exact_aspects = [a for a in aspects if a.get('exact', False)]
+                      for aspect in exact_aspects:
+                          events.append(f"Exact {aspect['aspect']} between {aspect['planet1']} and {aspect['planet2']}")
+
+                      # Lunar phase events
+                      if lunar_phase.get('is_new_moon'):
+                          events.append("New Moon - New beginnings favored")
+                      elif lunar_phase.get('is_full_moon'):
+                          events.append("Full Moon - Peak energy, increased volatility")
+
+                      return events
+                  except:
+                      return []
+
               def main():
-                  logger.info("🌟 Calculating daily astrological conditions")
+                  logger.info("🌟 Starting Daily Astrological Conditions Calculator")
 
                   # Database connection
                   db_config = {
@@ -164,18 +268,16 @@ spec:
                   target_date = date.today()
                   logger.info(f"📅 Calculating conditions for {target_date}")
 
-                  # Calculate conditions
+                  # Calculate all conditions
                   positions = calculate_planetary_positions(target_date)
-                  lunar_phase = calculate_lunar_phase(target_date)
-                  daily_score = calculate_daily_score(positions, lunar_phase)
+                  if not positions:
+                      raise Exception("Failed to calculate planetary positions")
 
-                  # Determine market outlook
-                  if daily_score >= 70:
-                      market_outlook = 'bullish'
-                  elif daily_score <= 30:
-                      market_outlook = 'bearish'
-                  else:
-                      market_outlook = 'neutral'
+                  lunar_phase = calculate_lunar_phase(target_date)
+                  aspects = calculate_major_aspects(positions)
+                  daily_score = calculate_daily_score(positions, aspects, lunar_phase)
+                  market_outlook = determine_market_outlook(daily_score, aspects)
+                  significant_events = get_significant_events(aspects, lunar_phase)
 
                   # Store in database
                   try:
@@ -184,21 +286,25 @@ spec:
 
                       cursor.execute("""
                           INSERT INTO daily_astrological_conditions (
-                              trade_date, planetary_positions, lunar_phase_name,
-                              lunar_phase_angle, daily_score, market_outlook
-                          ) VALUES (%s, %s, %s, %s, %s, %s)
+                              trade_date, planetary_positions, major_aspects, lunar_phase_name,
+                              lunar_phase_angle, significant_events, daily_score, market_outlook
+                          ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                           ON CONFLICT (trade_date) DO UPDATE SET
                               planetary_positions = EXCLUDED.planetary_positions,
+                              major_aspects = EXCLUDED.major_aspects,
                               lunar_phase_name = EXCLUDED.lunar_phase_name,
                               lunar_phase_angle = EXCLUDED.lunar_phase_angle,
+                              significant_events = EXCLUDED.significant_events,
                               daily_score = EXCLUDED.daily_score,
                               market_outlook = EXCLUDED.market_outlook,
                               created_at = NOW()
                       """, (
                           target_date,
                           json.dumps(positions),
+                          json.dumps(aspects),
                           lunar_phase.get('phase_name'),
                           lunar_phase.get('phase_angle'),
+                          significant_events,
                           daily_score,
                           market_outlook
                       ))
@@ -211,7 +317,9 @@ spec:
                       print(f"📊 Date: {target_date}")
                       print(f"🌟 Daily Score: {daily_score}/100")
                       print(f"📈 Market Outlook: {market_outlook}")
-                      print(f"🌙 Lunar Phase: {lunar_phase.get('phase_name')}")
+                      print(f"🌙 Lunar Phase: {lunar_phase.get('phase_name')} ({lunar_phase.get('phase_angle', 0):.1f}°)")
+                      print(f"⭐ Major Aspects: {len(aspects)}")
+                      print(f"🎯 Significant Events: {len(significant_events)}")
 
                   except Exception as e:
                       logger.error(f"❌ Database error: {e}")
