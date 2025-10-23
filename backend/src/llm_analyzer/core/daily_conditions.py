@@ -435,7 +435,7 @@ class DailyAstrologyCalculator:
         return conditions
 
     def store_daily_conditions(self, conditions: Dict[str, Any]) -> bool:
-        """Store daily conditions in database."""
+        """Store daily conditions in normalized database schema."""
         try:
             # Validate data before storing
             if not self.validate_calculated_data(conditions):
@@ -445,34 +445,26 @@ class DailyAstrologyCalculator:
             conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
 
-            # Debug: Log what we're about to store
-            positions_json = json.dumps(conditions['planetary_positions'])
-            aspects_json = json.dumps(conditions['major_aspects'])
+            logger.debug(f"🔍 Storing normalized data for {conditions['trade_date']}")
 
-            logger.debug(f"🔍 Storing for {conditions['trade_date']}:")
-            logger.debug(f"   Positions JSON length: {len(positions_json)} chars")
-            logger.debug(f"   Aspects JSON length: {len(aspects_json)} chars")
-            logger.debug(f"   Positions sample: {positions_json[:200]}...")
-            logger.debug(f"   Aspects count: {len(conditions['major_aspects'])}")
-
+            # Step 1: Insert/update main conditions record
             cursor.execute("""
                 INSERT INTO daily_astrological_conditions (
-                    trade_date, planetary_positions, major_aspects, lunar_phase_name,
+                    trade_date, planetary_positions, lunar_phase_name,
                     lunar_phase_angle, significant_events, daily_score, market_outlook
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (trade_date) DO UPDATE SET
                     planetary_positions = EXCLUDED.planetary_positions,
-                    major_aspects = EXCLUDED.major_aspects,
                     lunar_phase_name = EXCLUDED.lunar_phase_name,
                     lunar_phase_angle = EXCLUDED.lunar_phase_angle,
                     significant_events = EXCLUDED.significant_events,
                     daily_score = EXCLUDED.daily_score,
                     market_outlook = EXCLUDED.market_outlook,
                     created_at = NOW()
+                RETURNING id
             """, (
                 conditions['trade_date'],
-                positions_json,
-                aspects_json,
+                json.dumps(conditions['planetary_positions']),  # Keep JSONB as backup
                 conditions['lunar_phase_name'],
                 conditions['lunar_phase_angle'],
                 conditions['significant_events'],
@@ -480,32 +472,23 @@ class DailyAstrologyCalculator:
                 conditions['market_outlook']
             ))
 
-            # Verify the data was actually stored
-            cursor.execute("""
-                SELECT planetary_positions, major_aspects
-                FROM daily_astrological_conditions
-                WHERE trade_date = %s
-            """, (conditions['trade_date'],))
+            conditions_id = cursor.fetchone()[0]
+            logger.debug(f"   Main record ID: {conditions_id}")
 
-            result = cursor.fetchone()
-            if result:
-                stored_positions, stored_aspects = result
-                if stored_positions and stored_aspects:
-                    logger.info(f"✅ Verified: Data stored successfully for {conditions['trade_date']}")
-                    logger.debug(f"   Stored positions: {len(str(stored_positions))} chars")
-                    logger.debug(f"   Stored aspects: {len(str(stored_aspects))} chars")
-                else:
-                    logger.warning(f"⚠️ Data appears to be NULL after storage for {conditions['trade_date']}")
-                    logger.warning(f"   stored_positions is None: {stored_positions is None}")
-                    logger.warning(f"   stored_aspects is None: {stored_aspects is None}")
-            else:
-                logger.error(f"❌ No data found after insertion for {conditions['trade_date']}")
+            # Step 2: Store normalized planetary positions
+            positions_count = self._store_planetary_positions(cursor, conditions_id, conditions)
+
+            # Step 3: Store normalized aspects
+            aspects_count = self._store_planetary_aspects(cursor, conditions_id, conditions)
+
+            # Step 4: Calculate and store harmonic analysis
+            harmonic_success = self._store_harmonic_analysis(cursor, conditions_id, conditions)
 
             conn.commit()
             cursor.close()
             conn.close()
 
-            logger.info(f"💾 Stored daily conditions for {conditions['trade_date']}")
+            logger.info(f"💾 Stored normalized data for {conditions['trade_date']}: {positions_count} positions, {aspects_count} aspects")
             return True
 
         except Exception as e:
@@ -515,6 +498,211 @@ class DailyAstrologyCalculator:
             if 'conn' in locals():
                 conn.close()
             return False
+
+    def _store_planetary_positions(self, cursor, conditions_id: int, conditions: Dict[str, Any]) -> int:
+        """Store normalized planetary positions."""
+        try:
+            # Delete existing positions for this date
+            cursor.execute("""
+                DELETE FROM daily_planetary_positions
+                WHERE conditions_id = %s
+            """, (conditions_id,))
+
+            positions_stored = 0
+            for planet_name, position_data in conditions['planetary_positions'].items():
+                if 'error' in position_data:
+                    logger.warning(f"   Skipping {planet_name} due to calculation error")
+                    continue
+
+                cursor.execute("""
+                    INSERT INTO daily_planetary_positions (
+                        conditions_id, trade_date, planet, longitude, latitude,
+                        zodiac_sign, degree_in_sign, is_retrograde
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    conditions_id,
+                    conditions['trade_date'],
+                    planet_name,
+                    position_data['longitude'],
+                    0.0,  # latitude - placeholder for now
+                    position_data['sign'],
+                    position_data['degree_in_sign'],
+                    False  # is_retrograde - placeholder for now
+                ))
+                positions_stored += 1
+
+            logger.debug(f"   Stored {positions_stored} planetary positions")
+            return positions_stored
+
+        except Exception as e:
+            logger.error(f"❌ Error storing planetary positions: {e}")
+            return 0
+
+    def _store_planetary_aspects(self, cursor, conditions_id: int, conditions: Dict[str, Any]) -> int:
+        """Store normalized planetary aspects."""
+        try:
+            # Delete existing aspects for this date
+            cursor.execute("""
+                DELETE FROM daily_planetary_aspects
+                WHERE conditions_id = %s
+            """, (conditions_id,))
+
+            aspects_stored = 0
+            for aspect in conditions['major_aspects']:
+                # Ensure alphabetical planet ordering
+                planet1 = min(aspect['planet1'], aspect['planet2'])
+                planet2 = max(aspect['planet1'], aspect['planet2'])
+
+                cursor.execute("""
+                    INSERT INTO daily_planetary_aspects (
+                        conditions_id, trade_date, planet1, planet2, aspect_type,
+                        orb, separating_angle, is_exact, is_tight
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    conditions_id,
+                    conditions['trade_date'],
+                    planet1,
+                    planet2,
+                    aspect['aspect'],
+                    aspect['orb'],
+                    aspect['separating_angle'],
+                    aspect.get('exact', False),
+                    aspect['orb'] < 3.0  # is_tight if orb < 3 degrees
+                ))
+                aspects_stored += 1
+
+            logger.debug(f"   Stored {aspects_stored} planetary aspects")
+            return aspects_stored
+
+        except Exception as e:
+            logger.error(f"❌ Error storing planetary aspects: {e}")
+            return 0
+
+    def _store_harmonic_analysis(self, cursor, conditions_id: int, conditions: Dict[str, Any]) -> bool:
+        """Calculate and store harmonic analysis."""
+        try:
+            # Delete existing harmonic analysis for this date
+            cursor.execute("""
+                DELETE FROM daily_harmonic_analysis
+                WHERE conditions_id = %s
+            """, (conditions_id,))
+
+            # Calculate harmonic metrics
+            aspects = conditions['major_aspects']
+            positions = conditions['planetary_positions']
+
+            # Count aspect types
+            harmonious_aspects = len([a for a in aspects if a['aspect'] in ['trine', 'sextile']])
+            challenging_aspects = len([a for a in aspects if a['aspect'] in ['square', 'opposition']])
+            neutral_aspects = len([a for a in aspects if a['aspect'] == 'conjunction'])
+            total_aspects = len(aspects)
+
+            # Calculate ratios
+            harmony_ratio = harmonious_aspects / total_aspects if total_aspects > 0 else 0
+            tension_ratio = challenging_aspects / total_aspects if total_aspects > 0 else 0
+
+            # Count elemental distribution
+            element_counts = {'fire': 0, 'earth': 0, 'air': 0, 'water': 0}
+            modal_counts = {'cardinal': 0, 'fixed': 0, 'mutable': 0}
+
+            for planet_name, position_data in positions.items():
+                if 'error' in position_data:
+                    continue
+                sign = position_data['sign']
+                element = self._get_element_for_sign(sign)
+                modality = self._get_modality_for_sign(sign)
+
+                if element:
+                    element_counts[element] += 1
+                if modality:
+                    modal_counts[modality] += 1
+
+            # Calculate balance scores
+            total_planets = sum(element_counts.values())
+            elemental_balance = self._calculate_balance_score(element_counts.values())
+            modal_balance = self._calculate_balance_score(modal_counts.values())
+
+            # Calculate outer planet emphasis
+            outer_planets = ['Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Pluto']
+            outer_planet_aspects = len([a for a in aspects if
+                                     a['planet1'] in outer_planets or a['planet2'] in outer_planets])
+            inner_planet_aspects = total_aspects - outer_planet_aspects
+
+            # Store harmonic analysis
+            cursor.execute("""
+                INSERT INTO daily_harmonic_analysis (
+                    conditions_id, trade_date, total_aspects, harmonious_aspects,
+                    challenging_aspects, neutral_aspects, harmony_ratio, tension_ratio,
+                    overall_harmony_score, fire_planets, earth_planets, air_planets,
+                    water_planets, elemental_balance_score, cardinal_planets, fixed_planets,
+                    mutable_planets, modal_balance_score, outer_planet_aspects,
+                    inner_planet_aspects
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                conditions_id,
+                conditions['trade_date'],
+                total_aspects,
+                harmonious_aspects,
+                challenging_aspects,
+                neutral_aspects,
+                harmony_ratio,
+                tension_ratio,
+                int(conditions['daily_score']),  # Use existing daily score
+                element_counts['fire'],
+                element_counts['earth'],
+                element_counts['air'],
+                element_counts['water'],
+                elemental_balance,
+                modal_counts['cardinal'],
+                modal_counts['fixed'],
+                modal_counts['mutable'],
+                modal_balance,
+                outer_planet_aspects,
+                inner_planet_aspects
+            ))
+
+            logger.debug(f"   Stored harmonic analysis: {harmony_ratio:.2f} harmony ratio, {elemental_balance:.2f} elemental balance")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Error storing harmonic analysis: {e}")
+            return False
+
+    def _get_element_for_sign(self, sign: str) -> str:
+        """Get astrological element for zodiac sign."""
+        element_map = {
+            'Aries': 'fire', 'Leo': 'fire', 'Sagittarius': 'fire',
+            'Taurus': 'earth', 'Virgo': 'earth', 'Capricorn': 'earth',
+            'Gemini': 'air', 'Libra': 'air', 'Aquarius': 'air',
+            'Cancer': 'water', 'Scorpio': 'water', 'Pisces': 'water'
+        }
+        return element_map.get(sign)
+
+    def _get_modality_for_sign(self, sign: str) -> str:
+        """Get astrological modality for zodiac sign."""
+        modality_map = {
+            'Aries': 'cardinal', 'Cancer': 'cardinal', 'Libra': 'cardinal', 'Capricorn': 'cardinal',
+            'Taurus': 'fixed', 'Leo': 'fixed', 'Scorpio': 'fixed', 'Aquarius': 'fixed',
+            'Gemini': 'mutable', 'Virgo': 'mutable', 'Sagittarius': 'mutable', 'Pisces': 'mutable'
+        }
+        return modality_map.get(sign)
+
+    def _calculate_balance_score(self, counts) -> float:
+        """Calculate balance score (0-1) for distribution."""
+        counts_list = list(counts)
+        total = sum(counts_list)
+        if total == 0:
+            return 0.0
+
+        # Perfect balance would be equal distribution
+        expected = total / len(counts_list)
+        variance = sum((count - expected) ** 2 for count in counts_list) / len(counts_list)
+        max_variance = expected ** 2 * (len(counts_list) - 1) / len(counts_list) + (total - expected) ** 2 / len(counts_list)
+
+        if max_variance == 0:
+            return 1.0
+
+        return max(0.0, 1.0 - (variance / max_variance))
 
     def calculate_and_store_date_range(self, start_date: date, end_date: date) -> Dict[str, Any]:
         """Calculate and store conditions for a range of dates."""

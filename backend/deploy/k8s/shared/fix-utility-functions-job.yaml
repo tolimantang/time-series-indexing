@@ -1,0 +1,112 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fix-utility-functions
+  namespace: time-series-indexing
+  labels:
+    app: fix-utility-functions
+    component: database-fix
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: fix-utility-functions
+    spec:
+      containers:
+      - name: fix-functions
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "🛠️ Creating Utility Functions with Simple Syntax"
+
+          # Install dependencies
+          apt-get update && apt-get install -y libpq-dev postgresql-client && rm -rf /var/lib/apt/lists/*
+          pip install --no-cache-dir psycopg2-binary
+
+          # Create simple SQL script
+          cat > create_functions.sql << 'EOF'
+          -- Create get_zodiac_element function with simple syntax
+          CREATE OR REPLACE FUNCTION get_zodiac_element(sign VARCHAR(15))
+          RETURNS VARCHAR(10) AS
+          '
+          BEGIN
+              CASE sign
+                  WHEN ''Aries'' THEN RETURN ''fire'';
+                  WHEN ''Leo'' THEN RETURN ''fire'';
+                  WHEN ''Sagittarius'' THEN RETURN ''fire'';
+                  WHEN ''Taurus'' THEN RETURN ''earth'';
+                  WHEN ''Virgo'' THEN RETURN ''earth'';
+                  WHEN ''Capricorn'' THEN RETURN ''earth'';
+                  WHEN ''Gemini'' THEN RETURN ''air'';
+                  WHEN ''Libra'' THEN RETURN ''air'';
+                  WHEN ''Aquarius'' THEN RETURN ''air'';
+                  WHEN ''Cancer'' THEN RETURN ''water'';
+                  WHEN ''Scorpio'' THEN RETURN ''water'';
+                  WHEN ''Pisces'' THEN RETURN ''water'';
+                  ELSE RETURN NULL;
+              END CASE;
+          END;
+          ' LANGUAGE plpgsql IMMUTABLE;
+
+          -- Create get_zodiac_modality function with simple syntax
+          CREATE OR REPLACE FUNCTION get_zodiac_modality(sign VARCHAR(15))
+          RETURNS VARCHAR(10) AS
+          '
+          BEGIN
+              CASE sign
+                  WHEN ''Aries'' THEN RETURN ''cardinal'';
+                  WHEN ''Cancer'' THEN RETURN ''cardinal'';
+                  WHEN ''Libra'' THEN RETURN ''cardinal'';
+                  WHEN ''Capricorn'' THEN RETURN ''cardinal'';
+                  WHEN ''Taurus'' THEN RETURN ''fixed'';
+                  WHEN ''Leo'' THEN RETURN ''fixed'';
+                  WHEN ''Scorpio'' THEN RETURN ''fixed'';
+                  WHEN ''Aquarius'' THEN RETURN ''fixed'';
+                  WHEN ''Gemini'' THEN RETURN ''mutable'';
+                  WHEN ''Virgo'' THEN RETURN ''mutable'';
+                  WHEN ''Sagittarius'' THEN RETURN ''mutable'';
+                  WHEN ''Pisces'' THEN RETURN ''mutable'';
+                  ELSE RETURN NULL;
+              END CASE;
+          END;
+          ' LANGUAGE plpgsql IMMUTABLE;
+          EOF
+
+          # Execute using psql
+          echo "📡 Connecting to database and creating functions..."
+          psql -h $DB_HOST -U $DB_USER -d $DB_NAME -f create_functions.sql
+
+          # Test the functions
+          echo "🧪 Testing utility functions..."
+          psql -h $DB_HOST -U $DB_USER -d $DB_NAME -c "SELECT get_zodiac_element('Aries') as fire_test, get_zodiac_modality('Aries') as cardinal_test;"
+
+          echo "✅ Utility functions created successfully!"
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+
+      restartPolicy: Never
+  backoffLimit: 1

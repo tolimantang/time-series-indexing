@@ -1,0 +1,665 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: astro-backfill-50years
+  namespace: time-series-indexing
+  labels:
+    app: astro-backfill-50years
+    component: historical-data
+    type: backfill
+spec:
+  # Keep job for 7 days after completion for analysis
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels:
+        app: astro-backfill-50years
+        component: historical-data
+    spec:
+      containers:
+      - name: astro-backfill
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "🌟 Starting 50-Year Astrological Data Backfill"
+          echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          echo "Target: 1975-01-01 to $(date +%Y-%m-%d)"
+
+          # Install dependencies
+          apt-get update && apt-get install -y \
+            libpq-dev \
+            postgresql-client \
+            gcc \
+            curl \
+            wget \
+            && rm -rf /var/lib/apt/lists/*
+
+          # Install Python dependencies
+          pip install --no-cache-dir \
+            psycopg2-binary \
+            pyswisseph \
+            requests
+
+          # Create working directory
+          mkdir -p /app/src
+          cd /app
+
+          # Create the comprehensive backfill script
+          cat > src/daily_conditions_backfill.py << 'EOF'
+          #!/usr/bin/env python3
+          """
+          Comprehensive 50-year astrological data backfill script.
+          Calculates and stores daily astrological conditions from 1975 to present.
+          """
+
+          import os
+          import json
+          import logging
+          import psycopg2
+          from datetime import datetime, date, timedelta
+          import swisseph as swe
+          import time
+
+          logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+          logger = logging.getLogger(__name__)
+
+          class AstroBackfillProcessor:
+              """Processes historical astrological data in optimized batches."""
+
+              def __init__(self):
+                  self.db_config = {
+                      'host': os.getenv('DB_HOST'),
+                      'port': os.getenv('DB_PORT', '5432'),
+                      'database': os.getenv('DB_NAME'),
+                      'user': os.getenv('DB_USER'),
+                      'password': os.getenv('DB_PASSWORD'),
+                  }
+
+                  # Planetary constants
+                  self.planets = {
+                      'Sun': swe.SUN, 'Moon': swe.MOON, 'Mercury': swe.MERCURY,
+                      'Venus': swe.VENUS, 'Mars': swe.MARS, 'Jupiter': swe.JUPITER,
+                      'Saturn': swe.SATURN, 'Uranus': swe.URANUS,
+                      'Neptune': swe.NEPTUNE, 'Pluto': swe.PLUTO
+                  }
+
+                  self.zodiac_signs = [
+                      'Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
+                      'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'
+                  ]
+
+                  # Statistics tracking
+                  self.stats = {
+                      'processed': 0, 'errors': 0, 'skipped': 0,
+                      'start_time': time.time()
+                  }
+
+              def calculate_planetary_positions(self, target_date):
+                  """Calculate planetary positions using Swiss Ephemeris."""
+                  try:
+                      jd = swe.julday(target_date.year, target_date.month, target_date.day, 12.0)
+                      positions = {}
+
+                      for planet_name, planet_id in self.planets.items():
+                          try:
+                              position_data = swe.calc_ut(jd, planet_id)
+                              longitude = position_data[0][0]
+                              sign_index = int(longitude // 30)
+                              degree_in_sign = longitude % 30
+
+                              positions[planet_name] = {
+                                  'longitude': longitude,
+                                  'sign': self.zodiac_signs[sign_index],
+                                  'degree_in_sign': degree_in_sign,
+                                  'formatted': f"{degree_in_sign:.1f}° {self.zodiac_signs[sign_index]}"
+                              }
+                          except Exception as e:
+                              logger.warning(f"Error calculating {planet_name} for {target_date}: {e}")
+                              positions[planet_name] = {'error': str(e)}
+
+                      return positions
+                  except Exception as e:
+                      logger.error(f"Error calculating positions for {target_date}: {e}")
+                      return {}
+
+              def calculate_lunar_phase(self, target_date):
+                  """Calculate lunar phase information."""
+                  try:
+                      jd = swe.julday(target_date.year, target_date.month, target_date.day, 12.0)
+                      sun_pos = swe.calc_ut(jd, swe.SUN)[0][0]
+                      moon_pos = swe.calc_ut(jd, swe.MOON)[0][0]
+                      phase_angle = (moon_pos - sun_pos) % 360
+
+                      if phase_angle < 45:
+                          phase_name = "New Moon"
+                      elif phase_angle < 135:
+                          phase_name = "Waxing Moon"
+                      elif phase_angle < 225:
+                          phase_name = "Full Moon"
+                      else:
+                          phase_name = "Waning Moon"
+
+                      return {
+                          'phase_angle': phase_angle,
+                          'phase_name': phase_name,
+                          'illumination_percent': (1 - abs(180 - phase_angle) / 180) * 100,
+                          'is_new_moon': abs(phase_angle) < 15,
+                          'is_full_moon': abs(phase_angle - 180) < 15
+                      }
+                  except Exception as e:
+                      logger.error(f"Error calculating lunar phase for {target_date}: {e}")
+                      return {}
+
+              def calculate_major_aspects(self, positions):
+                  """Calculate major planetary aspects."""
+                  aspects = []
+                  aspect_orbs = {
+                      'conjunction': 8, 'opposition': 8, 'trine': 6,
+                      'square': 6, 'sextile': 4
+                  }
+
+                  planet_names = [p for p in positions.keys() if 'error' not in positions[p]]
+
+                  for i, planet1 in enumerate(planet_names):
+                      for planet2 in planet_names[i+1:]:
+                          pos1 = positions[planet1]['longitude']
+                          pos2 = positions[planet2]['longitude']
+
+                          separation = abs(pos2 - pos1)
+                          if separation > 180:
+                              separation = 360 - separation
+
+                          for aspect_name, target_angle in [
+                              ('conjunction', 0), ('opposition', 180), ('trine', 120),
+                              ('square', 90), ('sextile', 60)
+                          ]:
+                              orb = aspect_orbs[aspect_name]
+                              target = target_angle if target_angle == 0 or separation <= 180 else 180
+
+                              if abs(separation - target) <= orb:
+                                  aspects.append({
+                                      'planet1': planet1,
+                                      'planet2': planet2,
+                                      'aspect': aspect_name,
+                                      'orb': abs(separation - target),
+                                      'exact': abs(separation - target) < 1,
+                                      'separating_angle': separation
+                                  })
+
+                  return aspects
+
+              def calculate_daily_score(self, positions, aspects, lunar_phase):
+                  """Calculate daily astrological favorability score."""
+                  score = 50.0
+
+                  try:
+                      # Lunar phase scoring
+                      if lunar_phase.get('phase_name') == 'Waxing Moon':
+                          score += 10
+                      elif lunar_phase.get('phase_name') == 'Full Moon':
+                          score += 5
+                      elif lunar_phase.get('is_new_moon'):
+                          score += 8
+
+                      # Aspect scoring
+                      for aspect in aspects:
+                          if 'Mars' in [aspect['planet1'], aspect['planet2']]:
+                              if aspect['aspect'] in ['trine', 'sextile']:
+                                  score += 8
+                              elif aspect['aspect'] in ['square', 'opposition']:
+                                  score -= 5
+
+                          if 'Jupiter' in [aspect['planet1'], aspect['planet2']]:
+                              if aspect['aspect'] in ['trine', 'sextile', 'conjunction']:
+                                  score += 6
+
+                          if aspect.get('exact', False):
+                              score += 2
+
+                      return max(0, min(100, round(score, 1)))
+                  except:
+                      return 50.0
+
+              def determine_market_outlook(self, daily_score, aspects):
+                  """Determine market outlook."""
+                  try:
+                      challenging = len([a for a in aspects if a['aspect'] in ['square', 'opposition']])
+                      harmonious = len([a for a in aspects if a['aspect'] in ['trine', 'sextile']])
+                      mars_activity = len([a for a in aspects if 'Mars' in [a['planet1'], a['planet2']]])
+
+                      if daily_score >= 70:
+                          return 'bullish'
+                      elif daily_score <= 30:
+                          return 'bearish'
+                      elif mars_activity >= 3 or challenging > harmonious + 2:
+                          return 'volatile'
+                      else:
+                          return 'neutral'
+                  except:
+                      return 'neutral'
+
+              def get_significant_events(self, aspects, lunar_phase):
+                  """Get significant astrological events."""
+                  events = []
+                  try:
+                      exact_aspects = [a for a in aspects if a.get('exact', False)]
+                      for aspect in exact_aspects:
+                          events.append(f"Exact {aspect['aspect']} between {aspect['planet1']} and {aspect['planet2']}")
+
+                      if lunar_phase.get('is_new_moon'):
+                          events.append("New Moon - New beginnings favored")
+                      elif lunar_phase.get('is_full_moon'):
+                          events.append("Full Moon - Peak energy, increased volatility")
+
+                      return events
+                  except:
+                      return []
+
+              def store_batch_data(self, batch_data):
+                  """Store a batch of calculated data efficiently."""
+                  if not batch_data:
+                      return True
+
+                  try:
+                      conn = psycopg2.connect(**self.db_config)
+                      cursor = conn.cursor()
+
+                      # Batch insert main conditions
+                      conditions_data = []
+                      for data in batch_data:
+                          conditions_data.append((
+                              data['trade_date'],
+                              json.dumps(data['planetary_positions']),
+                              data['lunar_phase_name'],
+                              data['lunar_phase_angle'],
+                              data['significant_events'],
+                              data['daily_score'],
+                              data['market_outlook']
+                          ))
+
+                      # Use INSERT ... ON CONFLICT for main table
+                      cursor.executemany("""
+                          INSERT INTO daily_astrological_conditions (
+                              trade_date, planetary_positions, lunar_phase_name,
+                              lunar_phase_angle, significant_events, daily_score, market_outlook
+                          ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                          ON CONFLICT (trade_date) DO NOTHING
+                      """, conditions_data)
+
+                      # Get the condition IDs for foreign keys
+                      trade_dates = [d['trade_date'] for d in batch_data]
+                      cursor.execute("""
+                          SELECT id, trade_date FROM daily_astrological_conditions
+                          WHERE trade_date = ANY(%s)
+                      """, (trade_dates,))
+
+                      id_map = {trade_date: conditions_id for conditions_id, trade_date in cursor.fetchall()}
+
+                      # Batch insert positions and aspects
+                      self._batch_insert_positions(cursor, batch_data, id_map)
+                      self._batch_insert_aspects(cursor, batch_data, id_map)
+                      self._batch_insert_harmonic_analysis(cursor, batch_data, id_map)
+
+                      conn.commit()
+                      cursor.close()
+                      conn.close()
+
+                      return True
+
+                  except Exception as e:
+                      logger.error(f"Error storing batch data: {e}")
+                      return False
+
+              def _batch_insert_positions(self, cursor, batch_data, id_map):
+                  """Batch insert planetary positions."""
+                  positions_data = []
+                  for data in batch_data:
+                      conditions_id = id_map.get(data['trade_date'])
+                      if not conditions_id:
+                          continue
+
+                      for planet_name, position_data in data['planetary_positions'].items():
+                          if 'error' in position_data:
+                              continue
+
+                          positions_data.append((
+                              conditions_id, data['trade_date'], planet_name,
+                              position_data['longitude'], 0.0,
+                              position_data['sign'], position_data['degree_in_sign'], False
+                          ))
+
+                  if positions_data:
+                      cursor.executemany("""
+                          INSERT INTO daily_planetary_positions (
+                              conditions_id, trade_date, planet, longitude, latitude,
+                              zodiac_sign, degree_in_sign, is_retrograde
+                          ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                          ON CONFLICT (trade_date, planet) DO NOTHING
+                      """, positions_data)
+
+              def _batch_insert_aspects(self, cursor, batch_data, id_map):
+                  """Batch insert planetary aspects."""
+                  aspects_data = []
+                  for data in batch_data:
+                      conditions_id = id_map.get(data['trade_date'])
+                      if not conditions_id:
+                          continue
+
+                      for aspect in data['major_aspects']:
+                          planet1 = min(aspect['planet1'], aspect['planet2'])
+                          planet2 = max(aspect['planet1'], aspect['planet2'])
+
+                          aspects_data.append((
+                              conditions_id, data['trade_date'], planet1, planet2,
+                              aspect['aspect'], aspect['orb'], aspect['separating_angle'],
+                              aspect.get('exact', False), aspect['orb'] < 3.0
+                          ))
+
+                  if aspects_data:
+                      cursor.executemany("""
+                          INSERT INTO daily_planetary_aspects (
+                              conditions_id, trade_date, planet1, planet2, aspect_type,
+                              orb, separating_angle, is_exact, is_tight
+                          ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                          ON CONFLICT (trade_date, planet1, planet2, aspect_type) DO NOTHING
+                      """, aspects_data)
+
+              def _batch_insert_harmonic_analysis(self, cursor, batch_data, id_map):
+                  """Batch insert harmonic analysis."""
+                  harmonic_data = []
+                  for data in batch_data:
+                      conditions_id = id_map.get(data['trade_date'])
+                      if not conditions_id:
+                          continue
+
+                      # Calculate harmonic metrics
+                      aspects = data['major_aspects']
+                      positions = data['planetary_positions']
+
+                      harmonious = len([a for a in aspects if a['aspect'] in ['trine', 'sextile']])
+                      challenging = len([a for a in aspects if a['aspect'] in ['square', 'opposition']])
+                      neutral = len([a for a in aspects if a['aspect'] == 'conjunction'])
+                      total = len(aspects)
+
+                      harmony_ratio = harmonious / total if total > 0 else 0
+                      tension_ratio = challenging / total if total > 0 else 0
+
+                      # Count elements
+                      element_counts = {'fire': 0, 'earth': 0, 'air': 0, 'water': 0}
+                      modal_counts = {'cardinal': 0, 'fixed': 0, 'mutable': 0}
+
+                      for planet_name, position_data in positions.items():
+                          if 'error' in position_data:
+                              continue
+                          sign = position_data['sign']
+                          element = self._get_element_for_sign(sign)
+                          modality = self._get_modality_for_sign(sign)
+
+                          if element:
+                              element_counts[element] += 1
+                          if modality:
+                              modal_counts[modality] += 1
+
+                      elemental_balance = self._calculate_balance_score(element_counts.values())
+                      modal_balance = self._calculate_balance_score(modal_counts.values())
+
+                      # Outer planet aspects
+                      outer_planets = ['Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Pluto']
+                      outer_aspects = len([a for a in aspects if
+                                         a['planet1'] in outer_planets or a['planet2'] in outer_planets])
+
+                      harmonic_data.append((
+                          conditions_id, data['trade_date'], total, harmonious, challenging, neutral,
+                          harmony_ratio, tension_ratio, int(data['daily_score']),
+                          element_counts['fire'], element_counts['earth'],
+                          element_counts['air'], element_counts['water'], elemental_balance,
+                          modal_counts['cardinal'], modal_counts['fixed'], modal_counts['mutable'],
+                          modal_balance, outer_aspects, total - outer_aspects
+                      ))
+
+                  if harmonic_data:
+                      cursor.executemany("""
+                          INSERT INTO daily_harmonic_analysis (
+                              conditions_id, trade_date, total_aspects, harmonious_aspects,
+                              challenging_aspects, neutral_aspects, harmony_ratio, tension_ratio,
+                              overall_harmony_score, fire_planets, earth_planets, air_planets,
+                              water_planets, elemental_balance_score, cardinal_planets, fixed_planets,
+                              mutable_planets, modal_balance_score, outer_planet_aspects, inner_planet_aspects
+                          ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                          ON CONFLICT (trade_date) DO NOTHING
+                      """, harmonic_data)
+
+              def _get_element_for_sign(self, sign):
+                  element_map = {
+                      'Aries': 'fire', 'Leo': 'fire', 'Sagittarius': 'fire',
+                      'Taurus': 'earth', 'Virgo': 'earth', 'Capricorn': 'earth',
+                      'Gemini': 'air', 'Libra': 'air', 'Aquarius': 'air',
+                      'Cancer': 'water', 'Scorpio': 'water', 'Pisces': 'water'
+                  }
+                  return element_map.get(sign)
+
+              def _get_modality_for_sign(self, sign):
+                  modality_map = {
+                      'Aries': 'cardinal', 'Cancer': 'cardinal', 'Libra': 'cardinal', 'Capricorn': 'cardinal',
+                      'Taurus': 'fixed', 'Leo': 'fixed', 'Scorpio': 'fixed', 'Aquarius': 'fixed',
+                      'Gemini': 'mutable', 'Virgo': 'mutable', 'Sagittarius': 'mutable', 'Pisces': 'mutable'
+                  }
+                  return modality_map.get(sign)
+
+              def _calculate_balance_score(self, counts):
+                  counts_list = list(counts)
+                  total = sum(counts_list)
+                  if total == 0:
+                      return 0.0
+
+                  expected = total / len(counts_list)
+                  variance = sum((count - expected) ** 2 for count in counts_list) / len(counts_list)
+                  max_variance = expected ** 2 * (len(counts_list) - 1) / len(counts_list) + (total - expected) ** 2 / len(counts_list)
+
+                  if max_variance == 0:
+                      return 1.0
+
+                  return max(0.0, 1.0 - (variance / max_variance))
+
+              def check_existing_data(self, start_date, end_date):
+                  """Check what data already exists to avoid reprocessing."""
+                  try:
+                      conn = psycopg2.connect(**self.db_config)
+                      cursor = conn.cursor()
+
+                      cursor.execute("""
+                          SELECT trade_date FROM daily_astrological_conditions
+                          WHERE trade_date BETWEEN %s AND %s
+                          ORDER BY trade_date
+                      """, (start_date, end_date))
+
+                      existing_dates = {row[0] for row in cursor.fetchall()}
+                      cursor.close()
+                      conn.close()
+
+                      return existing_dates
+
+                  except Exception as e:
+                      logger.error(f"Error checking existing data: {e}")
+                      return set()
+
+              def process_date_range(self, start_date, end_date, batch_size=100):
+                  """Process a date range in batches."""
+                  logger.info(f"🚀 Processing {start_date} to {end_date} (batch size: {batch_size})")
+
+                  # Check existing data
+                  existing_dates = self.check_existing_data(start_date, end_date)
+                  logger.info(f"📊 Found {len(existing_dates)} existing records")
+
+                  current_date = start_date
+                  batch_data = []
+                  total_days = (end_date - start_date).days + 1
+
+                  while current_date <= end_date:
+                      try:
+                          # Skip if already exists
+                          if current_date in existing_dates:
+                              self.stats['skipped'] += 1
+                              current_date += timedelta(days=1)
+                              continue
+
+                          # Calculate daily conditions
+                          positions = self.calculate_planetary_positions(current_date)
+                          if not positions:
+                              self.stats['errors'] += 1
+                              current_date += timedelta(days=1)
+                              continue
+
+                          lunar_phase = self.calculate_lunar_phase(current_date)
+                          aspects = self.calculate_major_aspects(positions)
+                          daily_score = self.calculate_daily_score(positions, aspects, lunar_phase)
+                          market_outlook = self.determine_market_outlook(daily_score, aspects)
+                          significant_events = self.get_significant_events(aspects, lunar_phase)
+
+                          batch_data.append({
+                              'trade_date': current_date,
+                              'planetary_positions': positions,
+                              'major_aspects': aspects,
+                              'lunar_phase_name': lunar_phase.get('phase_name'),
+                              'lunar_phase_angle': lunar_phase.get('phase_angle'),
+                              'significant_events': significant_events,
+                              'daily_score': daily_score,
+                              'market_outlook': market_outlook
+                          })
+
+                          # Store batch when full
+                          if len(batch_data) >= batch_size:
+                              if self.store_batch_data(batch_data):
+                                  self.stats['processed'] += len(batch_data)
+                                  logger.info(f"✅ Processed batch ending {current_date} ({self.stats['processed']}/{total_days})")
+                              else:
+                                  self.stats['errors'] += len(batch_data)
+                                  logger.error(f"❌ Failed to store batch ending {current_date}")
+
+                              batch_data = []
+
+                          current_date += timedelta(days=1)
+
+                          # Progress update every 1000 days
+                          if self.stats['processed'] % 1000 == 0 and self.stats['processed'] > 0:
+                              elapsed = time.time() - self.stats['start_time']
+                              rate = self.stats['processed'] / elapsed
+                              remaining = (total_days - self.stats['processed']) / rate if rate > 0 else 0
+                              logger.info(f"📈 Progress: {self.stats['processed']}/{total_days} "
+                                        f"({rate:.1f} days/sec, ~{remaining/60:.1f}min remaining)")
+
+                      except Exception as e:
+                          logger.error(f"Error processing {current_date}: {e}")
+                          self.stats['errors'] += 1
+                          current_date += timedelta(days=1)
+
+                  # Store final batch
+                  if batch_data:
+                      if self.store_batch_data(batch_data):
+                          self.stats['processed'] += len(batch_data)
+                          logger.info(f"✅ Processed final batch ({len(batch_data)} records)")
+                      else:
+                          self.stats['errors'] += len(batch_data)
+
+                  return self.stats
+
+              def run_backfill(self, start_year=1975):
+                  """Run the complete backfill process."""
+                  start_date = date(start_year, 1, 1)
+                  end_date = date.today()
+
+                  logger.info(f"🌟 Starting 50-year backfill: {start_date} to {end_date}")
+                  logger.info(f"📅 Total days to process: {(end_date - start_date).days + 1}")
+
+                  result = self.process_date_range(start_date, end_date, batch_size=100)
+
+                  elapsed = time.time() - self.stats['start_time']
+                  logger.info(f"✅ Backfill completed in {elapsed/60:.1f} minutes")
+                  logger.info(f"📊 Final stats: {result}")
+
+                  return result
+
+          def main():
+              logger.info("🌟 Starting 50-Year Astrological Backfill")
+
+              try:
+                  processor = AstroBackfillProcessor()
+                  result = processor.run_backfill(start_year=1975)
+
+                  print("\n" + "="*80)
+                  print("🎉 50-YEAR BACKFILL COMPLETED!")
+                  print("="*80)
+                  print(f"✅ Successfully processed: {result['processed']}")
+                  print(f"⚠️ Skipped (existing): {result['skipped']}")
+                  print(f"❌ Errors: {result['errors']}")
+                  print(f"⏱️ Total time: {(time.time() - result['start_time'])/60:.1f} minutes")
+                  print("="*80)
+                  print("\n🎯 Next Steps:")
+                  print("1. Verify data quality with sample queries")
+                  print("2. Run pattern detection on historical data")
+                  print("3. Begin correlation analysis with trading data")
+                  print("="*80)
+
+              except Exception as e:
+                  logger.error(f"❌ Backfill failed: {e}")
+                  raise
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          # Execute the backfill
+          echo "🚀 Starting 50-year astrological data backfill..."
+          python3 src/daily_conditions_backfill.py
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+
+      # Tolerate CriticalAddonsOnly taint
+      tolerations:
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoExecute"
+
+      restartPolicy: Never
+
+  # Allow 2 retries for the massive backfill
+  backoffLimit: 2
+
+  # Set maximum run time to 6 hours (21600 seconds)
+  activeDeadlineSeconds: 21600

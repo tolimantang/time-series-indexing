@@ -1,0 +1,904 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: astro-schema-migration
+  namespace: time-series-indexing
+  labels:
+    app: astro-schema-migration
+    component: database-migration
+    type: one-time-setup
+spec:
+  # Keep job for 24 hours after completion for debugging
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: astro-schema-migration
+        component: database-migration
+    spec:
+      containers:
+      - name: schema-migration
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "🗄️ Starting Astrological Schema Migration"
+          echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          # Install dependencies
+          apt-get update && apt-get install -y \
+            libpq-dev \
+            postgresql-client \
+            && rm -rf /var/lib/apt/lists/*
+
+          pip install --no-cache-dir psycopg2-binary
+
+          # Create working directory
+          mkdir -p /app
+          cd /app
+
+          # Create the migration SQL script
+          cat > enhanced_astro_schema.sql << 'EOF'
+          -- =====================================================================================
+          -- Enhanced Astrological Analysis Schema Migration
+          -- =====================================================================================
+          -- This migration creates a comprehensive normalized schema for astrological analysis
+          -- with support for planetary positions, aspects, patterns, and harmonic analysis.
+          --
+          -- Tables Created/Modified:
+          -- 1. daily_astrological_conditions (modified)
+          -- 2. daily_planetary_positions (new)
+          -- 3. daily_planetary_aspects (new)
+          -- 4. daily_harmonic_analysis (new)
+          -- 5. daily_astrological_patterns (new)
+          -- 6. planets (reference table)
+          -- 7. aspect_types (reference table)
+          -- =====================================================================================
+
+          BEGIN;
+
+          -- Check if migration has already been run
+          DO $$
+          BEGIN
+              IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'planets') THEN
+                  RAISE NOTICE 'Migration appears to have been run already. Checking for updates...';
+              ELSE
+                  RAISE NOTICE 'Running initial migration...';
+              END IF;
+          END $$;
+
+          -- =====================================================================================
+          -- REFERENCE TABLES
+          -- =====================================================================================
+
+          -- Planets reference table
+          CREATE TABLE IF NOT EXISTS planets (
+              id SERIAL PRIMARY KEY,
+              name VARCHAR(20) UNIQUE NOT NULL,
+              symbol VARCHAR(10),
+              planet_type VARCHAR(20) NOT NULL,  -- 'inner', 'outer', 'luminaries'
+              astrological_significance TEXT,
+              display_order INTEGER NOT NULL,
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+          );
+
+          -- Insert standard planets
+          INSERT INTO planets (name, symbol, planet_type, display_order, astrological_significance) VALUES
+          ('Sun', '☉', 'luminaries', 1, 'Ego, vitality, core identity'),
+          ('Moon', '☽', 'luminaries', 2, 'Emotions, instincts, subconscious'),
+          ('Mercury', '☿', 'inner', 3, 'Communication, thinking, commerce'),
+          ('Venus', '♀', 'inner', 4, 'Love, beauty, values, money'),
+          ('Mars', '♂', 'inner', 5, 'Action, energy, conflict, desire'),
+          ('Jupiter', '♃', 'outer', 6, 'Expansion, optimism, philosophy, luck'),
+          ('Saturn', '♄', 'outer', 7, 'Structure, discipline, limitation, responsibility'),
+          ('Uranus', '♅', 'outer', 8, 'Innovation, rebellion, sudden change'),
+          ('Neptune', '♆', 'outer', 9, 'Spirituality, illusion, imagination'),
+          ('Pluto', '♇', 'outer', 10, 'Transformation, power, regeneration')
+          ON CONFLICT (name) DO NOTHING;
+
+          -- Aspect types reference table
+          CREATE TABLE IF NOT EXISTS aspect_types (
+              id SERIAL PRIMARY KEY,
+              name VARCHAR(20) UNIQUE NOT NULL,
+              angle DOUBLE PRECISION NOT NULL,
+              default_orb DOUBLE PRECISION NOT NULL,
+              harmony_type VARCHAR(20) NOT NULL, -- 'harmonious', 'challenging', 'neutral'
+              description TEXT,
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+          );
+
+          INSERT INTO aspect_types (name, angle, default_orb, harmony_type, description) VALUES
+          ('conjunction', 0, 8, 'neutral', 'Planets in the same position - intense, focused energy'),
+          ('sextile', 60, 4, 'harmonious', 'Opportunity, ease, cooperative energy'),
+          ('square', 90, 6, 'challenging', 'Tension, conflict, dynamic action required'),
+          ('trine', 120, 6, 'harmonious', 'Flow, natural talent, ease of expression'),
+          ('opposition', 180, 8, 'challenging', 'Polarity, awareness, need for balance')
+          ON CONFLICT (name) DO NOTHING;
+
+          -- =====================================================================================
+          -- CORE TABLES MODIFICATION
+          -- =====================================================================================
+
+          -- Ensure existing table has an ID column
+          DO $$
+          BEGIN
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'daily_astrological_conditions'
+                           AND column_name = 'id') THEN
+                  ALTER TABLE daily_astrological_conditions ADD COLUMN id SERIAL PRIMARY KEY;
+                  RAISE NOTICE 'Added id column to daily_astrological_conditions';
+              END IF;
+          END $$;
+
+          -- Remove major_aspects JSONB column if it exists (will be normalized)
+          DO $$
+          BEGIN
+              IF EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'daily_astrological_conditions'
+                        AND column_name = 'major_aspects') THEN
+                  ALTER TABLE daily_astrological_conditions DROP COLUMN major_aspects;
+                  RAISE NOTICE 'Removed major_aspects JSONB column (will be normalized)';
+              END IF;
+          END $$;
+
+          -- Ensure proper indexes
+          CREATE INDEX IF NOT EXISTS idx_conditions_date ON daily_astrological_conditions(trade_date);
+          CREATE INDEX IF NOT EXISTS idx_conditions_id ON daily_astrological_conditions(id);
+
+          -- =====================================================================================
+          -- NORMALIZED PLANETARY POSITIONS
+          -- =====================================================================================
+
+          CREATE TABLE IF NOT EXISTS daily_planetary_positions (
+              id SERIAL PRIMARY KEY,
+              conditions_id INTEGER NOT NULL REFERENCES daily_astrological_conditions(id) ON DELETE CASCADE,
+              trade_date DATE NOT NULL,  -- Denormalized for fast queries without JOIN
+
+              -- Planet identification
+              planet VARCHAR(20) NOT NULL,
+
+              -- Position data
+              longitude DOUBLE PRECISION NOT NULL,           -- 0-360 degrees
+              latitude DOUBLE PRECISION DEFAULT 0,           -- Usually small for planets
+              zodiac_sign VARCHAR(15) NOT NULL,              -- 'Aries', 'Taurus', etc.
+              degree_in_sign DOUBLE PRECISION NOT NULL,      -- 0-30 degrees within sign
+
+              -- Movement data
+              is_retrograde BOOLEAN DEFAULT FALSE,
+              daily_motion DOUBLE PRECISION,                 -- degrees per day (future enhancement)
+
+              -- House positions (future enhancement)
+              house_number INTEGER,                          -- 1-12 houses
+
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+              CONSTRAINT unique_planet_date UNIQUE (trade_date, planet),
+              CONSTRAINT valid_longitude CHECK (longitude >= 0 AND longitude < 360),
+              CONSTRAINT valid_degree_in_sign CHECK (degree_in_sign >= 0 AND degree_in_sign < 30),
+              CONSTRAINT valid_zodiac_sign CHECK (zodiac_sign IN (
+                  'Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
+                  'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'
+              ))
+          );
+
+          -- Add foreign key constraint if planets table exists
+          DO $$
+          BEGIN
+              IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints
+                           WHERE constraint_name = 'fk_planet_name') THEN
+                  ALTER TABLE daily_planetary_positions
+                  ADD CONSTRAINT fk_planet_name FOREIGN KEY (planet) REFERENCES planets(name);
+              END IF;
+          END $$;
+
+          -- Indexes for planetary positions
+          CREATE INDEX IF NOT EXISTS idx_positions_planet_date ON daily_planetary_positions(planet, trade_date);
+          CREATE INDEX IF NOT EXISTS idx_positions_sign_date ON daily_planetary_positions(zodiac_sign, trade_date);
+          CREATE INDEX IF NOT EXISTS idx_positions_planet_sign ON daily_planetary_positions(planet, zodiac_sign);
+          CREATE INDEX IF NOT EXISTS idx_positions_date ON daily_planetary_positions(trade_date);
+          CREATE INDEX IF NOT EXISTS idx_positions_retrograde ON daily_planetary_positions(planet, trade_date)
+              WHERE is_retrograde = true;
+
+          -- =====================================================================================
+          -- NORMALIZED PLANETARY ASPECTS
+          -- =====================================================================================
+
+          CREATE TABLE IF NOT EXISTS daily_planetary_aspects (
+              id SERIAL PRIMARY KEY,
+              conditions_id INTEGER NOT NULL REFERENCES daily_astrological_conditions(id) ON DELETE CASCADE,
+              trade_date DATE NOT NULL,  -- Denormalized for fast queries without JOIN
+
+              -- Planet information (alphabetically ordered to avoid duplicates)
+              planet1 VARCHAR(20) NOT NULL,
+              planet2 VARCHAR(20) NOT NULL,
+
+              -- Aspect details
+              aspect_type VARCHAR(20) NOT NULL,
+              orb DOUBLE PRECISION NOT NULL,                 -- Deviation from exact aspect
+              separating_angle DOUBLE PRECISION NOT NULL,    -- Actual angular separation
+
+              -- Aspect quality indicators
+              is_exact BOOLEAN DEFAULT FALSE,                -- orb < 1 degree
+              is_tight BOOLEAN DEFAULT FALSE,                -- orb < 3 degrees
+              is_applying BOOLEAN,                           -- Aspect getting tighter (future enhancement)
+
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+              -- Constraints
+              CONSTRAINT unique_aspect_per_date UNIQUE (trade_date, planet1, planet2, aspect_type),
+              CONSTRAINT planet_order_check CHECK (planet1 < planet2),  -- Alphabetical ordering
+              CONSTRAINT valid_orb CHECK (orb >= 0 AND orb <= 15),
+              CONSTRAINT valid_separating_angle CHECK (separating_angle >= 0 AND separating_angle <= 180)
+          );
+
+          -- Add foreign key constraints
+          DO $$
+          BEGIN
+              IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints
+                           WHERE constraint_name = 'fk_planet1_name') THEN
+                  ALTER TABLE daily_planetary_aspects
+                  ADD CONSTRAINT fk_planet1_name FOREIGN KEY (planet1) REFERENCES planets(name);
+              END IF;
+
+              IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints
+                           WHERE constraint_name = 'fk_planet2_name') THEN
+                  ALTER TABLE daily_planetary_aspects
+                  ADD CONSTRAINT fk_planet2_name FOREIGN KEY (planet2) REFERENCES planets(name);
+              END IF;
+
+              IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints
+                           WHERE constraint_name = 'fk_aspect_type_name') THEN
+                  ALTER TABLE daily_planetary_aspects
+                  ADD CONSTRAINT fk_aspect_type_name FOREIGN KEY (aspect_type) REFERENCES aspect_types(name);
+              END IF;
+          END $$;
+
+          -- Indexes for aspects
+          CREATE INDEX IF NOT EXISTS idx_aspects_planets_type ON daily_planetary_aspects(planet1, planet2, aspect_type);
+          CREATE INDEX IF NOT EXISTS idx_aspects_type_date ON daily_planetary_aspects(aspect_type, trade_date);
+          CREATE INDEX IF NOT EXISTS idx_aspects_planet1_date ON daily_planetary_aspects(planet1, trade_date);
+          CREATE INDEX IF NOT EXISTS idx_aspects_planet2_date ON daily_planetary_aspects(planet2, trade_date);
+          CREATE INDEX IF NOT EXISTS idx_aspects_date ON daily_planetary_aspects(trade_date);
+
+          -- =====================================================================================
+          -- HARMONIC ANALYSIS TABLE
+          -- =====================================================================================
+
+          CREATE TABLE IF NOT EXISTS daily_harmonic_analysis (
+              id SERIAL PRIMARY KEY,
+              conditions_id INTEGER NOT NULL REFERENCES daily_astrological_conditions(id) ON DELETE CASCADE,
+              trade_date DATE NOT NULL UNIQUE,
+
+              -- Overall aspect metrics
+              total_aspects INTEGER NOT NULL DEFAULT 0,
+              harmonious_aspects INTEGER NOT NULL DEFAULT 0,      -- trines, sextiles
+              challenging_aspects INTEGER NOT NULL DEFAULT 0,     -- squares, oppositions
+              neutral_aspects INTEGER NOT NULL DEFAULT 0,         -- conjunctions
+
+              -- Calculated ratios (0.0 to 1.0)
+              harmony_ratio DOUBLE PRECISION DEFAULT 0,           -- harmonious / total
+              tension_ratio DOUBLE PRECISION DEFAULT 0,           -- challenging / total
+              overall_harmony_score INTEGER DEFAULT 50,           -- 1-100 composite score
+
+              -- Elemental distribution (planets in each element)
+              fire_planets INTEGER DEFAULT 0,          -- Aries, Leo, Sagittarius
+              earth_planets INTEGER DEFAULT 0,         -- Taurus, Virgo, Capricorn
+              air_planets INTEGER DEFAULT 0,           -- Gemini, Libra, Aquarius
+              water_planets INTEGER DEFAULT 0,         -- Cancer, Scorpio, Pisces
+              elemental_balance_score DOUBLE PRECISION DEFAULT 0, -- How balanced the elements are (0-1)
+
+              -- Modal distribution (cardinal, fixed, mutable)
+              cardinal_planets INTEGER DEFAULT 0,      -- Aries, Cancer, Libra, Capricorn
+              fixed_planets INTEGER DEFAULT 0,         -- Taurus, Leo, Scorpio, Aquarius
+              mutable_planets INTEGER DEFAULT 0,       -- Gemini, Virgo, Sagittarius, Pisces
+              modal_balance_score DOUBLE PRECISION DEFAULT 0,
+
+              -- Pattern indicators (boolean flags for quick filtering)
+              has_grand_trine BOOLEAN DEFAULT FALSE,
+              has_t_square BOOLEAN DEFAULT FALSE,
+              has_grand_cross BOOLEAN DEFAULT FALSE,
+              has_stellium BOOLEAN DEFAULT FALSE,
+              has_yod BOOLEAN DEFAULT FALSE,
+
+              -- Planetary emphasis
+              outer_planet_aspects INTEGER DEFAULT 0,   -- Aspects involving Jupiter, Saturn, Uranus, Neptune, Pluto
+              inner_planet_aspects INTEGER DEFAULT 0,   -- Aspects involving Sun, Moon, Mercury, Venus, Mars
+              generational_emphasis_score DOUBLE PRECISION DEFAULT 0,
+
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+              -- Constraints
+              CONSTRAINT valid_harmony_score CHECK (overall_harmony_score >= 0 AND overall_harmony_score <= 100),
+              CONSTRAINT valid_ratios CHECK (
+                  harmony_ratio >= 0 AND harmony_ratio <= 1 AND
+                  tension_ratio >= 0 AND tension_ratio <= 1 AND
+                  elemental_balance_score >= 0 AND elemental_balance_score <= 1 AND
+                  modal_balance_score >= 0 AND modal_balance_score <= 1
+              )
+          );
+
+          -- Indexes for harmonic analysis
+          CREATE INDEX IF NOT EXISTS idx_harmonic_date ON daily_harmonic_analysis(trade_date);
+          CREATE INDEX IF NOT EXISTS idx_harmonic_harmony_score ON daily_harmonic_analysis(overall_harmony_score DESC, trade_date);
+
+          -- =====================================================================================
+          -- ASTROLOGICAL PATTERNS TABLE
+          -- =====================================================================================
+
+          CREATE TABLE IF NOT EXISTS daily_astrological_patterns (
+              id SERIAL PRIMARY KEY,
+              conditions_id INTEGER NOT NULL REFERENCES daily_astrological_conditions(id) ON DELETE CASCADE,
+              trade_date DATE NOT NULL,
+
+              -- Pattern identification
+              pattern_type VARCHAR(30) NOT NULL,  -- 'grand_trine', 't_square', 'grand_cross', 'stellium', 'yod'
+              pattern_subtype VARCHAR(50),        -- 'fire_grand_trine', 'cardinal_t_square', 'outer_planet_stellium'
+
+              -- Involved planets (stored as arrays for easy querying)
+              primary_planets TEXT[] NOT NULL,    -- Core planets forming the pattern
+              supporting_planets TEXT[],          -- Additional planets strengthening pattern
+
+              -- Pattern strength and quality
+              orb_tightness DOUBLE PRECISION,     -- Average orb of aspects in pattern
+              pattern_strength INTEGER CHECK (pattern_strength >= 1 AND pattern_strength <= 10), -- 1-10 strength rating
+              is_exact BOOLEAN DEFAULT FALSE,     -- All aspects < 2° orb
+              geometric_precision DOUBLE PRECISION, -- How close to perfect geometry (0-1)
+
+              -- Astrological classification
+              element VARCHAR(10),                -- 'fire', 'earth', 'air', 'water' for elemental patterns
+              modality VARCHAR(10),               -- 'cardinal', 'fixed', 'mutable'
+              pattern_quality VARCHAR(20),        -- 'harmonious', 'challenging', 'mixed', 'transformative'
+
+              -- Interpretive information
+              pattern_meaning TEXT,               -- Brief astrological interpretation
+              market_significance TEXT,           -- Potential trading/market implications
+
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+              -- Constraints
+              CONSTRAINT valid_element CHECK (element IS NULL OR element IN ('fire', 'earth', 'air', 'water')),
+              CONSTRAINT valid_modality CHECK (modality IS NULL OR modality IN ('cardinal', 'fixed', 'mutable')),
+              CONSTRAINT valid_pattern_type CHECK (pattern_type IN (
+                  'grand_trine', 't_square', 'grand_cross', 'stellium', 'yod', 'grand_sextile',
+                  'mystic_rectangle', 'kite', 'cradle', 'locomotive'
+              ))
+          );
+
+          -- Indexes for patterns
+          CREATE INDEX IF NOT EXISTS idx_patterns_type_date ON daily_astrological_patterns(pattern_type, trade_date);
+          CREATE INDEX IF NOT EXISTS idx_patterns_element_date ON daily_astrological_patterns(element, trade_date);
+
+          -- =====================================================================================
+          -- UTILITY FUNCTIONS
+          -- =====================================================================================
+
+          -- Function to calculate elemental balance score
+          CREATE OR REPLACE FUNCTION calculate_elemental_balance(
+              fire_count INTEGER,
+              earth_count INTEGER,
+              air_count INTEGER,
+              water_count INTEGER
+          ) RETURNS DOUBLE PRECISION AS $func$
+          DECLARE
+              total_planets INTEGER;
+              expected_per_element DOUBLE PRECISION;
+              variance DOUBLE PRECISION;
+              max_variance DOUBLE PRECISION;
+          BEGIN
+              total_planets := fire_count + earth_count + air_count + water_count;
+
+              IF total_planets = 0 THEN
+                  RETURN 0.0;
+              END IF;
+
+              expected_per_element := total_planets / 4.0;
+
+              -- Calculate variance from perfect balance
+              variance := (
+                  POWER(fire_count - expected_per_element, 2) +
+                  POWER(earth_count - expected_per_element, 2) +
+                  POWER(air_count - expected_per_element, 2) +
+                  POWER(water_count - expected_per_element, 2)
+              ) / 4.0;
+
+              -- Maximum possible variance (all planets in one element)
+              max_variance := POWER(total_planets - expected_per_element, 2) / 4.0 * 3 + POWER(expected_per_element, 2) / 4.0;
+
+              -- Return balance score (1.0 = perfect balance, 0.0 = maximum imbalance)
+              RETURN 1.0 - (variance / max_variance);
+          END;
+          $func$ LANGUAGE plpgsql IMMUTABLE;
+
+          -- Function to get element for zodiac sign
+          CREATE OR REPLACE FUNCTION get_zodiac_element(sign VARCHAR(15))
+          RETURNS VARCHAR(10) AS $func$
+          BEGIN
+              RETURN CASE sign
+                  WHEN 'Aries' THEN 'fire'
+                  WHEN 'Leo' THEN 'fire'
+                  WHEN 'Sagittarius' THEN 'fire'
+                  WHEN 'Taurus' THEN 'earth'
+                  WHEN 'Virgo' THEN 'earth'
+                  WHEN 'Capricorn' THEN 'earth'
+                  WHEN 'Gemini' THEN 'air'
+                  WHEN 'Libra' THEN 'air'
+                  WHEN 'Aquarius' THEN 'air'
+                  WHEN 'Cancer' THEN 'water'
+                  WHEN 'Scorpio' THEN 'water'
+                  WHEN 'Pisces' THEN 'water'
+                  ELSE NULL
+              END;
+          END;
+          $func$ LANGUAGE plpgsql IMMUTABLE;
+
+          -- Function to get modality for zodiac sign
+          CREATE OR REPLACE FUNCTION get_zodiac_modality(sign VARCHAR(15))
+          RETURNS VARCHAR(10) AS $func$
+          BEGIN
+              RETURN CASE sign
+                  WHEN 'Aries' THEN 'cardinal'
+                  WHEN 'Cancer' THEN 'cardinal'
+                  WHEN 'Libra' THEN 'cardinal'
+                  WHEN 'Capricorn' THEN 'cardinal'
+                  WHEN 'Taurus' THEN 'fixed'
+                  WHEN 'Leo' THEN 'fixed'
+                  WHEN 'Scorpio' THEN 'fixed'
+                  WHEN 'Aquarius' THEN 'fixed'
+                  WHEN 'Gemini' THEN 'mutable'
+                  WHEN 'Virgo' THEN 'mutable'
+                  WHEN 'Sagittarius' THEN 'mutable'
+                  WHEN 'Pisces' THEN 'mutable'
+                  ELSE NULL
+              END;
+          END;
+          $func$ LANGUAGE plpgsql IMMUTABLE;
+
+          COMMIT;
+
+          -- =====================================================================================
+          -- VERIFICATION
+          -- =====================================================================================
+
+          -- Verify table creation
+          SELECT 'Migration completed successfully!' as status;
+
+          SELECT 'Tables created:' as info,
+                 COUNT(*) as table_count
+          FROM information_schema.tables
+          WHERE table_name IN (
+              'planets',
+              'aspect_types',
+              'daily_astrological_conditions',
+              'daily_planetary_positions',
+              'daily_planetary_aspects',
+              'daily_harmonic_analysis',
+              'daily_astrological_patterns'
+          );
+
+          -- Verify reference data
+          SELECT 'Reference data:' as info;
+          SELECT 'Planets' as table_name, COUNT(*) as record_count FROM planets
+          UNION ALL
+          SELECT 'Aspect Types' as table_name, COUNT(*) as record_count FROM aspect_types;
+          EOF
+
+          # Create Python script to run the migration step by step
+          cat > run_migration.py << 'EOF'
+          #!/usr/bin/env python3
+          import os
+          import psycopg2
+          import logging
+
+          logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+          logger = logging.getLogger(__name__)
+
+          def execute_sql_statement(cursor, sql, description):
+              """Execute a single SQL statement with error handling."""
+              try:
+                  cursor.execute(sql)
+                  logger.info(f"✅ {description}")
+                  return True
+              except Exception as e:
+                  logger.warning(f"⚠️ {description} - {e}")
+                  return False
+
+          def main():
+              logger.info("🗄️ Starting Enhanced Astrological Schema Migration")
+
+              # Database connection
+              db_config = {
+                  'host': os.getenv('DB_HOST'),
+                  'port': os.getenv('DB_PORT', '5432'),
+                  'database': os.getenv('DB_NAME'),
+                  'user': os.getenv('DB_USER'),
+                  'password': os.getenv('DB_PASSWORD'),
+              }
+
+              try:
+                  # Test connection
+                  logger.info("📡 Testing database connection...")
+                  conn = psycopg2.connect(**db_config)
+                  conn.autocommit = True  # Enable autocommit for DDL statements
+                  cursor = conn.cursor()
+                  cursor.execute("SELECT version();")
+                  version = cursor.fetchone()[0]
+                  logger.info(f"✅ Connected to PostgreSQL: {version}")
+
+                  logger.info("🚀 Starting migration step by step...")
+
+                  # Step 1: Create reference tables
+                  logger.info("📋 Creating reference tables...")
+
+                  execute_sql_statement(cursor, """
+                      CREATE TABLE IF NOT EXISTS planets (
+                          id SERIAL PRIMARY KEY,
+                          name VARCHAR(20) UNIQUE NOT NULL,
+                          symbol VARCHAR(10),
+                          planet_type VARCHAR(20) NOT NULL,
+                          astrological_significance TEXT,
+                          display_order INTEGER NOT NULL,
+                          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                      );
+                  """, "Created planets table")
+
+                  execute_sql_statement(cursor, """
+                      INSERT INTO planets (name, symbol, planet_type, display_order, astrological_significance) VALUES
+                      ('Sun', '☉', 'luminaries', 1, 'Ego, vitality, core identity'),
+                      ('Moon', '☽', 'luminaries', 2, 'Emotions, instincts, subconscious'),
+                      ('Mercury', '☿', 'inner', 3, 'Communication, thinking, commerce'),
+                      ('Venus', '♀', 'inner', 4, 'Love, beauty, values, money'),
+                      ('Mars', '♂', 'inner', 5, 'Action, energy, conflict, desire'),
+                      ('Jupiter', '♃', 'outer', 6, 'Expansion, optimism, philosophy, luck'),
+                      ('Saturn', '♄', 'outer', 7, 'Structure, discipline, limitation, responsibility'),
+                      ('Uranus', '♅', 'outer', 8, 'Innovation, rebellion, sudden change'),
+                      ('Neptune', '♆', 'outer', 9, 'Spirituality, illusion, imagination'),
+                      ('Pluto', '♇', 'outer', 10, 'Transformation, power, regeneration')
+                      ON CONFLICT (name) DO NOTHING;
+                  """, "Inserted planet data")
+
+                  execute_sql_statement(cursor, """
+                      CREATE TABLE IF NOT EXISTS aspect_types (
+                          id SERIAL PRIMARY KEY,
+                          name VARCHAR(20) UNIQUE NOT NULL,
+                          angle DOUBLE PRECISION NOT NULL,
+                          default_orb DOUBLE PRECISION NOT NULL,
+                          harmony_type VARCHAR(20) NOT NULL,
+                          description TEXT,
+                          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                      );
+                  """, "Created aspect_types table")
+
+                  execute_sql_statement(cursor, """
+                      INSERT INTO aspect_types (name, angle, default_orb, harmony_type, description) VALUES
+                      ('conjunction', 0, 8, 'neutral', 'Planets in the same position - intense, focused energy'),
+                      ('sextile', 60, 4, 'harmonious', 'Opportunity, ease, cooperative energy'),
+                      ('square', 90, 6, 'challenging', 'Tension, conflict, dynamic action required'),
+                      ('trine', 120, 6, 'harmonious', 'Flow, natural talent, ease of expression'),
+                      ('opposition', 180, 8, 'challenging', 'Polarity, awareness, need for balance')
+                      ON CONFLICT (name) DO NOTHING;
+                  """, "Inserted aspect type data")
+
+                  # Step 2: Modify existing table
+                  logger.info("🔧 Modifying existing daily_astrological_conditions table...")
+
+                  # Check if id column exists
+                  cursor.execute("""
+                      SELECT COUNT(*) FROM information_schema.columns
+                      WHERE table_name = 'daily_astrological_conditions'
+                      AND column_name = 'id';
+                  """)
+                  id_exists = cursor.fetchone()[0] > 0
+
+                  if not id_exists:
+                      execute_sql_statement(cursor, """
+                          ALTER TABLE daily_astrological_conditions ADD COLUMN id SERIAL PRIMARY KEY;
+                      """, "Added id column to daily_astrological_conditions")
+
+                  # Check if major_aspects column exists and remove it
+                  cursor.execute("""
+                      SELECT COUNT(*) FROM information_schema.columns
+                      WHERE table_name = 'daily_astrological_conditions'
+                      AND column_name = 'major_aspects';
+                  """)
+                  aspects_exists = cursor.fetchone()[0] > 0
+
+                  if aspects_exists:
+                      execute_sql_statement(cursor, """
+                          ALTER TABLE daily_astrological_conditions DROP COLUMN major_aspects;
+                      """, "Removed major_aspects JSONB column (will be normalized)")
+
+                  execute_sql_statement(cursor, """
+                      CREATE INDEX IF NOT EXISTS idx_conditions_date ON daily_astrological_conditions(trade_date);
+                  """, "Created index on conditions date")
+
+                  # Step 3: Create normalized tables
+                  logger.info("📊 Creating normalized planetary positions table...")
+
+                  execute_sql_statement(cursor, """
+                      CREATE TABLE IF NOT EXISTS daily_planetary_positions (
+                          id SERIAL PRIMARY KEY,
+                          conditions_id INTEGER NOT NULL REFERENCES daily_astrological_conditions(id) ON DELETE CASCADE,
+                          trade_date DATE NOT NULL,
+                          planet VARCHAR(20) NOT NULL REFERENCES planets(name),
+                          longitude DOUBLE PRECISION NOT NULL,
+                          latitude DOUBLE PRECISION DEFAULT 0,
+                          zodiac_sign VARCHAR(15) NOT NULL,
+                          degree_in_sign DOUBLE PRECISION NOT NULL,
+                          is_retrograde BOOLEAN DEFAULT FALSE,
+                          daily_motion DOUBLE PRECISION,
+                          house_number INTEGER,
+                          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                          CONSTRAINT unique_planet_date UNIQUE (trade_date, planet),
+                          CONSTRAINT valid_longitude CHECK (longitude >= 0 AND longitude < 360),
+                          CONSTRAINT valid_degree_in_sign CHECK (degree_in_sign >= 0 AND degree_in_sign < 30),
+                          CONSTRAINT valid_zodiac_sign CHECK (zodiac_sign IN (
+                              'Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
+                              'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'
+                          ))
+                      );
+                  """, "Created daily_planetary_positions table")
+
+                  logger.info("⭐ Creating normalized planetary aspects table...")
+
+                  execute_sql_statement(cursor, """
+                      CREATE TABLE IF NOT EXISTS daily_planetary_aspects (
+                          id SERIAL PRIMARY KEY,
+                          conditions_id INTEGER NOT NULL REFERENCES daily_astrological_conditions(id) ON DELETE CASCADE,
+                          trade_date DATE NOT NULL,
+                          planet1 VARCHAR(20) NOT NULL REFERENCES planets(name),
+                          planet2 VARCHAR(20) NOT NULL REFERENCES planets(name),
+                          aspect_type VARCHAR(20) NOT NULL REFERENCES aspect_types(name),
+                          orb DOUBLE PRECISION NOT NULL,
+                          separating_angle DOUBLE PRECISION NOT NULL,
+                          is_exact BOOLEAN DEFAULT FALSE,
+                          is_tight BOOLEAN DEFAULT FALSE,
+                          is_applying BOOLEAN,
+                          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                          CONSTRAINT unique_aspect_per_date UNIQUE (trade_date, planet1, planet2, aspect_type),
+                          CONSTRAINT planet_order_check CHECK (planet1 < planet2),
+                          CONSTRAINT valid_orb CHECK (orb >= 0 AND orb <= 15),
+                          CONSTRAINT valid_separating_angle CHECK (separating_angle >= 0 AND separating_angle <= 180)
+                      );
+                  """, "Created daily_planetary_aspects table")
+
+                  logger.info("📈 Creating harmonic analysis table...")
+
+                  execute_sql_statement(cursor, """
+                      CREATE TABLE IF NOT EXISTS daily_harmonic_analysis (
+                          id SERIAL PRIMARY KEY,
+                          conditions_id INTEGER NOT NULL REFERENCES daily_astrological_conditions(id) ON DELETE CASCADE,
+                          trade_date DATE NOT NULL UNIQUE,
+                          total_aspects INTEGER NOT NULL DEFAULT 0,
+                          harmonious_aspects INTEGER NOT NULL DEFAULT 0,
+                          challenging_aspects INTEGER NOT NULL DEFAULT 0,
+                          neutral_aspects INTEGER NOT NULL DEFAULT 0,
+                          harmony_ratio DOUBLE PRECISION DEFAULT 0,
+                          tension_ratio DOUBLE PRECISION DEFAULT 0,
+                          overall_harmony_score INTEGER DEFAULT 50,
+                          fire_planets INTEGER DEFAULT 0,
+                          earth_planets INTEGER DEFAULT 0,
+                          air_planets INTEGER DEFAULT 0,
+                          water_planets INTEGER DEFAULT 0,
+                          elemental_balance_score DOUBLE PRECISION DEFAULT 0,
+                          cardinal_planets INTEGER DEFAULT 0,
+                          fixed_planets INTEGER DEFAULT 0,
+                          mutable_planets INTEGER DEFAULT 0,
+                          modal_balance_score DOUBLE PRECISION DEFAULT 0,
+                          has_grand_trine BOOLEAN DEFAULT FALSE,
+                          has_t_square BOOLEAN DEFAULT FALSE,
+                          has_grand_cross BOOLEAN DEFAULT FALSE,
+                          has_stellium BOOLEAN DEFAULT FALSE,
+                          has_yod BOOLEAN DEFAULT FALSE,
+                          outer_planet_aspects INTEGER DEFAULT 0,
+                          inner_planet_aspects INTEGER DEFAULT 0,
+                          generational_emphasis_score DOUBLE PRECISION DEFAULT 0,
+                          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                          CONSTRAINT valid_harmony_score CHECK (overall_harmony_score >= 0 AND overall_harmony_score <= 100),
+                          CONSTRAINT valid_ratios CHECK (
+                              harmony_ratio >= 0 AND harmony_ratio <= 1 AND
+                              tension_ratio >= 0 AND tension_ratio <= 1 AND
+                              elemental_balance_score >= 0 AND elemental_balance_score <= 1 AND
+                              modal_balance_score >= 0 AND modal_balance_score <= 1
+                          )
+                      );
+                  """, "Created daily_harmonic_analysis table")
+
+                  logger.info("🔮 Creating astrological patterns table...")
+
+                  execute_sql_statement(cursor, """
+                      CREATE TABLE IF NOT EXISTS daily_astrological_patterns (
+                          id SERIAL PRIMARY KEY,
+                          conditions_id INTEGER NOT NULL REFERENCES daily_astrological_conditions(id) ON DELETE CASCADE,
+                          trade_date DATE NOT NULL,
+                          pattern_type VARCHAR(30) NOT NULL,
+                          pattern_subtype VARCHAR(50),
+                          primary_planets TEXT[] NOT NULL,
+                          supporting_planets TEXT[],
+                          orb_tightness DOUBLE PRECISION,
+                          pattern_strength INTEGER CHECK (pattern_strength >= 1 AND pattern_strength <= 10),
+                          is_exact BOOLEAN DEFAULT FALSE,
+                          geometric_precision DOUBLE PRECISION,
+                          element VARCHAR(10),
+                          modality VARCHAR(10),
+                          pattern_quality VARCHAR(20),
+                          pattern_meaning TEXT,
+                          market_significance TEXT,
+                          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                          CONSTRAINT valid_element CHECK (element IS NULL OR element IN ('fire', 'earth', 'air', 'water')),
+                          CONSTRAINT valid_modality CHECK (modality IS NULL OR modality IN ('cardinal', 'fixed', 'mutable')),
+                          CONSTRAINT valid_pattern_type CHECK (pattern_type IN (
+                              'grand_trine', 't_square', 'grand_cross', 'stellium', 'yod', 'grand_sextile',
+                              'mystic_rectangle', 'kite', 'cradle', 'locomotive'
+                          ))
+                      );
+                  """, "Created daily_astrological_patterns table")
+
+                  # Step 4: Create indexes
+                  logger.info("📊 Creating performance indexes...")
+
+                  indexes = [
+                      ("CREATE INDEX IF NOT EXISTS idx_positions_planet_date ON daily_planetary_positions(planet, trade_date);", "Position planet-date index"),
+                      ("CREATE INDEX IF NOT EXISTS idx_positions_sign_date ON daily_planetary_positions(zodiac_sign, trade_date);", "Position sign-date index"),
+                      ("CREATE INDEX IF NOT EXISTS idx_positions_date ON daily_planetary_positions(trade_date);", "Position date index"),
+                      ("CREATE INDEX IF NOT EXISTS idx_aspects_planets_type ON daily_planetary_aspects(planet1, planet2, aspect_type);", "Aspect planets-type index"),
+                      ("CREATE INDEX IF NOT EXISTS idx_aspects_type_date ON daily_planetary_aspects(aspect_type, trade_date);", "Aspect type-date index"),
+                      ("CREATE INDEX IF NOT EXISTS idx_aspects_date ON daily_planetary_aspects(trade_date);", "Aspect date index"),
+                      ("CREATE INDEX IF NOT EXISTS idx_harmonic_date ON daily_harmonic_analysis(trade_date);", "Harmonic date index"),
+                      ("CREATE INDEX IF NOT EXISTS idx_harmonic_harmony_score ON daily_harmonic_analysis(overall_harmony_score DESC, trade_date);", "Harmonic score index"),
+                      ("CREATE INDEX IF NOT EXISTS idx_patterns_type_date ON daily_astrological_patterns(pattern_type, trade_date);", "Pattern type-date index"),
+                  ]
+
+                  for sql, description in indexes:
+                      execute_sql_statement(cursor, sql, description)
+
+                  # Step 5: Create utility functions
+                  logger.info("🛠️ Creating utility functions...")
+
+                  execute_sql_statement(cursor, """
+                      CREATE OR REPLACE FUNCTION get_zodiac_element(sign VARCHAR(15))
+                      RETURNS VARCHAR(10) AS $$
+                      BEGIN
+                          RETURN CASE sign
+                              WHEN 'Aries' THEN 'fire'
+                              WHEN 'Leo' THEN 'fire'
+                              WHEN 'Sagittarius' THEN 'fire'
+                              WHEN 'Taurus' THEN 'earth'
+                              WHEN 'Virgo' THEN 'earth'
+                              WHEN 'Capricorn' THEN 'earth'
+                              WHEN 'Gemini' THEN 'air'
+                              WHEN 'Libra' THEN 'air'
+                              WHEN 'Aquarius' THEN 'air'
+                              WHEN 'Cancer' THEN 'water'
+                              WHEN 'Scorpio' THEN 'water'
+                              WHEN 'Pisces' THEN 'water'
+                              ELSE NULL
+                          END;
+                      END;
+                      $$ LANGUAGE plpgsql IMMUTABLE;
+                  """, "Created get_zodiac_element function")
+
+                  execute_sql_statement(cursor, """
+                      CREATE OR REPLACE FUNCTION get_zodiac_modality(sign VARCHAR(15))
+                      RETURNS VARCHAR(10) AS $$
+                      BEGIN
+                          RETURN CASE sign
+                              WHEN 'Aries' THEN 'cardinal'
+                              WHEN 'Cancer' THEN 'cardinal'
+                              WHEN 'Libra' THEN 'cardinal'
+                              WHEN 'Capricorn' THEN 'cardinal'
+                              WHEN 'Taurus' THEN 'fixed'
+                              WHEN 'Leo' THEN 'fixed'
+                              WHEN 'Scorpio' THEN 'fixed'
+                              WHEN 'Aquarius' THEN 'fixed'
+                              WHEN 'Gemini' THEN 'mutable'
+                              WHEN 'Virgo' THEN 'mutable'
+                              WHEN 'Sagittarius' THEN 'mutable'
+                              WHEN 'Pisces' THEN 'mutable'
+                              ELSE NULL
+                          END;
+                      END;
+                      $$ LANGUAGE plpgsql IMMUTABLE;
+                  """, "Created get_zodiac_modality function")
+
+                  logger.info("✅ Migration completed successfully!")
+
+                  # Verify the migration
+                  logger.info("🔍 Verifying migration results...")
+                  cursor.execute("""
+                      SELECT table_name FROM information_schema.tables
+                      WHERE table_name IN (
+                          'planets', 'aspect_types', 'daily_planetary_positions',
+                          'daily_planetary_aspects', 'daily_harmonic_analysis',
+                          'daily_astrological_patterns'
+                      )
+                      ORDER BY table_name;
+                  """)
+
+                  tables = [row[0] for row in cursor.fetchall()]
+                  logger.info(f"📋 Tables verified: {', '.join(tables)}")
+
+                  # Check reference data
+                  cursor.execute("SELECT COUNT(*) FROM planets;")
+                  planet_count = cursor.fetchone()[0]
+                  cursor.execute("SELECT COUNT(*) FROM aspect_types;")
+                  aspect_count = cursor.fetchone()[0]
+
+                  logger.info(f"🪐 Planets loaded: {planet_count}")
+                  logger.info(f"⭐ Aspect types loaded: {aspect_count}")
+
+                  cursor.close()
+                  conn.close()
+
+                  print("\n" + "="*80)
+                  print("🎉 MIGRATION COMPLETED SUCCESSFULLY!")
+                  print("="*80)
+                  print(f"✅ Tables created: {len(tables)}")
+                  print(f"✅ Planets loaded: {planet_count}")
+                  print(f"✅ Aspect types loaded: {aspect_count}")
+                  print("\n🎯 Next Steps:")
+                  print("1. Update daily conditions calculator to use new schema")
+                  print("2. Backfill historical data into normalized tables")
+                  print("3. Test queries against new schema")
+                  print("="*80)
+
+              except Exception as e:
+                  logger.error(f"❌ Migration failed: {e}")
+                  raise
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          # Execute the migration
+          python3 run_migration.py
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+      # Tolerate CriticalAddonsOnly taint
+      tolerations:
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+        effect: "NoExecute"
+
+      restartPolicy: Never
+
+  # Retry failed jobs up to 2 times
+  backoffLimit: 2
+
+  # Set maximum run time to 15 minutes
+  activeDeadlineSeconds: 900
