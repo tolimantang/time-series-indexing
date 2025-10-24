@@ -1,0 +1,90 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fix-lunar-patterns-schema
+  namespace: time-series-indexing
+spec:
+  template:
+    spec:
+      containers:
+      - name: schema-fixer
+        image: postgres:17
+        command: ["/bin/bash"]
+        args:
+          - -c
+          - |
+            echo "🔧 Fixing lunar_patterns table schema"
+
+            # Check current schema
+            echo "📊 Current lunar_patterns table structure:"
+            PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -p "$DB_PORT" -c "\d lunar_patterns" || echo "Table doesn't exist yet"
+
+            # Create or fix the lunar_patterns table
+            echo "🛠️ Creating/updating lunar_patterns table..."
+            PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -p "$DB_PORT" << 'EOF'
+
+            CREATE TABLE IF NOT EXISTS lunar_patterns (
+                id SERIAL PRIMARY KEY,
+                symbol VARCHAR(50) NOT NULL,
+                pattern_type VARCHAR(100) NOT NULL,
+                pattern_description TEXT NOT NULL,
+                predicted_direction VARCHAR(10) NOT NULL CHECK (predicted_direction IN ('up', 'down')),
+                accuracy_percentage DECIMAL(5,2) NOT NULL,
+                total_occurrences INTEGER NOT NULL,
+                successful_predictions INTEGER NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                data_source VARCHAR(100),
+                UNIQUE(symbol, pattern_description, predicted_direction)
+            );
+
+            -- Add missing columns if they don't exist
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='lunar_patterns' AND column_name='symbol') THEN
+                    ALTER TABLE lunar_patterns ADD COLUMN symbol VARCHAR(50) NOT NULL DEFAULT 'UNKNOWN';
+                END IF;
+
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='lunar_patterns' AND column_name='data_source') THEN
+                    ALTER TABLE lunar_patterns ADD COLUMN data_source VARCHAR(100);
+                END IF;
+            END $$;
+
+            EOF
+
+            # Verify the fix
+            echo "✅ Updated lunar_patterns table structure:"
+            PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -p "$DB_PORT" -c "\d lunar_patterns"
+
+            echo "🎯 Schema fix completed successfully!"
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+      restartPolicy: Never
+  backoffLimit: 1

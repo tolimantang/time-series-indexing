@@ -1,0 +1,296 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: debug-lunar-patterns
+  namespace: time-series-indexing
+spec:
+  template:
+    spec:
+      containers:
+      - name: pattern-debugger
+        image: ubuntu:latest
+        command: ["/bin/bash"]
+        args:
+          - -c
+          - |
+            echo "🔍 Debugging Lunar Pattern Analysis"
+
+            # Install dependencies
+            apt-get update && apt-get install -y \
+              python3 \
+              python3-pip \
+              build-essential \
+              gcc \
+              g++ \
+              make \
+              pkg-config \
+              libpq-dev \
+              git \
+              && rm -rf /var/lib/apt/lists/*
+
+            # Create requirements.txt
+            cat > requirements.txt << 'EOF'
+            psycopg2-binary==2.9.11
+            pyswisseph==2.10.3.2
+            yfinance==0.2.40
+            EOF
+
+            # Install Python dependencies
+            pip3 install --break-system-packages --no-cache-dir -r requirements.txt
+
+            # Create debugging script
+            cat > debug_patterns.py << 'EOF'
+            import os
+            import psycopg2
+            import swisseph as swe
+            from datetime import datetime, timedelta
+            import logging
+
+            logging.basicConfig(level=logging.INFO)
+            logger = logging.getLogger(__name__)
+
+            class LunarPatternDebugger:
+                def __init__(self):
+                    # PostgreSQL connection using environment variables from secrets
+                    self.conn = psycopg2.connect(
+                        host=os.environ.get('DB_HOST'),
+                        database=os.environ.get('DB_NAME'),
+                        user=os.environ.get('DB_USER'),
+                        password=os.environ.get('DB_PASSWORD'),
+                        port=os.environ.get('DB_PORT', '5432')
+                    )
+
+                    # Initialize Swiss Ephemeris
+                    swe.set_ephe_path('/usr/share/libswe/ephe')
+
+                def debug_data_retrieval(self):
+                    """Debug the data retrieval process"""
+                    logger.info("🔍 Debugging data retrieval...")
+
+                    with self.conn.cursor() as cur:
+                        # Check what data we actually have
+                        cur.execute("""
+                            SELECT
+                                COUNT(*) as total_records,
+                                MIN(datetime) as earliest,
+                                MAX(datetime) as latest,
+                                MIN(close_price) as min_price,
+                                MAX(close_price) as max_price,
+                                AVG(close_price) as avg_price
+                            FROM market_data_intraday
+                            WHERE symbol = 'PLATINUM_FUTURES'
+                            AND interval_type = '1h'
+                        """)
+
+                        result = cur.fetchone()
+                        logger.info(f"📊 Total records: {result[0]:,}")
+                        logger.info(f"📅 Date range: {result[1]} to {result[2]}")
+                        logger.info(f"💰 Price range: ${result[3]:.2f} - ${result[4]:.2f} (avg: ${result[5]:.2f})")
+
+                        # Get sample data with date filtering
+                        start_date = datetime(2023, 11, 27)
+                        end_date = datetime(2024, 10, 24)
+
+                        cur.execute("""
+                            SELECT datetime, close_price
+                            FROM market_data_intraday
+                            WHERE symbol = 'PLATINUM_FUTURES'
+                            AND datetime BETWEEN %s AND %s
+                            AND interval_type = '1h'
+                            ORDER BY datetime
+                            LIMIT 10
+                        """, (start_date, end_date))
+
+                        sample_data = cur.fetchall()
+                        logger.info(f"📋 Sample data (first 10 records):")
+                        for i, (dt, price) in enumerate(sample_data, 1):
+                            logger.info(f"   {i:2d}. {dt} → ${price:.2f}")
+
+                def debug_price_movements(self):
+                    """Debug price movement calculations"""
+                    logger.info("📈 Debugging price movements...")
+
+                    start_date = datetime(2023, 11, 27)
+                    end_date = datetime(2024, 10, 24)
+
+                    with self.conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT datetime, close_price
+                            FROM market_data_intraday
+                            WHERE symbol = 'PLATINUM_FUTURES'
+                            AND datetime BETWEEN %s AND %s
+                            AND interval_type = '1h'
+                            ORDER BY datetime
+                            LIMIT 100
+                        """, (start_date, end_date))
+
+                        price_data = cur.fetchall()
+
+                        movements = {'up': 0, 'down': 0, 'flat': 0}
+                        weekend_skips = 0
+
+                        for i in range(len(price_data) - 24):
+                            current_time, current_price = price_data[i]
+
+                            # Skip weekends
+                            if current_time.weekday() >= 5:
+                                weekend_skips += 1
+                                continue
+
+                            # Find next trading day price
+                            next_price = None
+                            for j in range(i + 1, min(i + 48, len(price_data))):
+                                next_time, next_price_val = price_data[j]
+                                if next_time.weekday() < 5:
+                                    next_price = next_price_val
+                                    break
+
+                            if next_price is None:
+                                continue
+
+                            # Calculate price movement
+                            price_change = ((next_price - current_price) / current_price) * 100
+                            direction = 'up' if price_change > 0.1 else 'down' if price_change < -0.1 else 'flat'
+                            movements[direction] += 1
+
+                            if i < 5:  # Log first few for debugging
+                                logger.info(f"   Sample {i+1}: {current_time} ${current_price:.2f} → ${next_price:.2f} "
+                                          f"({price_change:+.2f}%) = {direction}")
+
+                        logger.info(f"📊 Movement analysis (first 100 records):")
+                        logger.info(f"   Up movements: {movements['up']}")
+                        logger.info(f"   Down movements: {movements['down']}")
+                        logger.info(f"   Flat movements: {movements['flat']}")
+                        logger.info(f"   Weekend skips: {weekend_skips}")
+
+                def debug_lunar_calculations(self):
+                    """Debug lunar position calculations"""
+                    logger.info("🌙 Debugging lunar calculations...")
+
+                    # Test lunar calculations for a few sample dates
+                    test_dates = [
+                        datetime(2024, 1, 15, 10, 0),  # Sample date
+                        datetime(2024, 6, 15, 14, 0),  # Different season
+                        datetime(2024, 10, 15, 16, 0)  # Recent date
+                    ]
+
+                    for test_date in test_dates:
+                        julian_day = swe.julday(
+                            test_date.year,
+                            test_date.month,
+                            test_date.day,
+                            test_date.hour + test_date.minute/60.0
+                        )
+
+                        # Get lunar position
+                        result = swe.calc_ut(julian_day, swe.MOON)
+                        longitude = result[0][0]
+
+                        # Calculate zodiac sign
+                        sign_num = int(longitude // 30)
+                        signs = ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
+                               'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces']
+
+                        logger.info(f"🌙 {test_date}: Moon at {longitude:.2f}° in {signs[sign_num]}")
+
+                def debug_pattern_logic(self):
+                    """Debug the pattern evaluation logic"""
+                    logger.info("🧮 Debugging pattern evaluation logic...")
+
+                    # Simulate pattern detection with known thresholds
+                    MIN_OCCURRENCES = 5
+                    ACCURACY_THRESHOLD = 0.65
+
+                    # Test patterns with different accuracy levels
+                    test_patterns = {
+                        'Moon in Aries': {'up': 8, 'down': 2},      # 80% accuracy, 10 total
+                        'Moon in Taurus': {'up': 3, 'down': 2},     # 60% accuracy, 5 total
+                        'Moon in Gemini': {'up': 4, 'down': 7},     # 36% accuracy, 11 total
+                        'Moon square Mars': {'up': 7, 'down': 3},   # 70% accuracy, 10 total
+                        'Moon trine Venus': {'up': 2, 'down': 1},   # 67% accuracy, 3 total
+                    }
+
+                    valid_patterns = []
+
+                    for pattern_name, counts in test_patterns.items():
+                        total = counts['up'] + counts['down']
+
+                        logger.info(f"🔍 Testing {pattern_name}: {counts['up']} up, {counts['down']} down (total: {total})")
+
+                        if total >= MIN_OCCURRENCES:
+                            up_accuracy = counts['up'] / total
+                            down_accuracy = counts['down'] / total
+
+                            logger.info(f"   Up accuracy: {up_accuracy:.1%}, Down accuracy: {down_accuracy:.1%}")
+
+                            if up_accuracy >= ACCURACY_THRESHOLD:
+                                logger.info(f"   ✅ Valid UP pattern: {up_accuracy:.1%} accuracy")
+                                valid_patterns.append(pattern_name)
+                            elif down_accuracy >= ACCURACY_THRESHOLD:
+                                logger.info(f"   ✅ Valid DOWN pattern: {down_accuracy:.1%} accuracy")
+                                valid_patterns.append(pattern_name)
+                            else:
+                                logger.info(f"   ❌ Not accurate enough (max: {max(up_accuracy, down_accuracy):.1%})")
+                        else:
+                            logger.info(f"   ❌ Not enough occurrences (need {MIN_OCCURRENCES}, got {total})")
+
+                    logger.info(f"📈 Valid patterns found in test: {len(valid_patterns)}")
+
+                def run_debug(self):
+                    """Run all debugging tests"""
+                    logger.info("🚀 Starting Lunar Pattern Debugging")
+
+                    try:
+                        self.debug_data_retrieval()
+                        self.debug_price_movements()
+                        self.debug_lunar_calculations()
+                        self.debug_pattern_logic()
+
+                        logger.info("✅ Debugging completed successfully!")
+
+                    except Exception as e:
+                        logger.error(f"❌ Debug failed: {e}")
+                        raise
+                    finally:
+                        self.conn.close()
+
+            if __name__ == "__main__":
+                debugger = LunarPatternDebugger()
+                debugger.run_debug()
+            EOF
+
+            # Run the debugging script
+            echo "🔍 Starting pattern debugging..."
+            python3 debug_patterns.py
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+        resources:
+          requests:
+            memory: "500Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+      restartPolicy: Never
+  backoffLimit: 1

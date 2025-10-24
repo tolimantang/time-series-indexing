@@ -1,0 +1,106 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: check-hourly-data
+  namespace: time-series-indexing
+spec:
+  template:
+    spec:
+      containers:
+      - name: data-checker
+        image: ubuntu:latest
+        command: ["/bin/bash"]
+        args:
+          - -c
+          - |
+            echo "📊 Checking available hourly data"
+
+            # Install dependencies
+            apt-get update && apt-get install -y python3 python3-pip libpq-dev
+            pip3 install --break-system-packages psycopg2-binary
+
+            # Create data checker script
+            cat > check_data.py << 'EOF'
+            import psycopg2
+            import os
+            from datetime import datetime, timedelta
+
+            # Connect to database
+            conn = psycopg2.connect(
+                host=os.environ.get('DB_HOST'),
+                database=os.environ.get('DB_NAME'),
+                user=os.environ.get('DB_USER'),
+                password=os.environ.get('DB_PASSWORD'),
+                port=os.environ.get('DB_PORT', '5432')
+            )
+
+            with conn.cursor() as cur:
+                # Check platinum data
+                cur.execute("""
+                    SELECT
+                        symbol,
+                        COUNT(*) as record_count,
+                        MIN(datetime) as start_date,
+                        MAX(datetime) as end_date,
+                        interval_type
+                    FROM market_data_intraday
+                    WHERE symbol LIKE '%PL%'
+                    GROUP BY symbol, interval_type
+                    ORDER BY symbol;
+                """)
+
+                results = cur.fetchall()
+
+                print("💎 Available Platinum Hourly Data:")
+                for symbol, count, start, end, interval in results:
+                    print(f"  {symbol}: {count:,} records from {start} to {end} ({interval})")
+
+                # Check if PL=F specifically exists
+                cur.execute("""
+                    SELECT COUNT(*) FROM market_data_intraday
+                    WHERE symbol = 'PL=F' AND interval_type = '1h';
+                """)
+
+                pl_count = cur.fetchone()[0]
+                print(f"\n🎯 PL=F hourly records: {pl_count:,}")
+
+                if pl_count == 0:
+                    print("❌ No PL=F data found - checking all symbols...")
+                    cur.execute("""
+                        SELECT DISTINCT symbol FROM market_data_intraday
+                        WHERE interval_type = '1h'
+                        ORDER BY symbol;
+                    """)
+                    symbols = cur.fetchall()
+                    print("Available symbols:", [s[0] for s in symbols])
+
+            conn.close()
+            EOF
+
+            # Run the checker
+            python3 check_data.py
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+      restartPolicy: Never
+  backoffLimit: 1

@@ -1,0 +1,349 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: final-enhanced-hourly-lunar-backtest
+  namespace: time-series-indexing
+spec:
+  template:
+    spec:
+      containers:
+      - name: lunar-tester
+        image: ubuntu:latest
+        command: ["/bin/bash"]
+        args:
+          - -c
+          - |
+            echo "🌙⚡ Final Enhanced Hourly Lunar Backtesting"
+
+            # Update package list and install system dependencies
+            apt-get update && apt-get install -y \
+              python3 \
+              python3-pip \
+              build-essential \
+              gcc \
+              g++ \
+              make \
+              pkg-config \
+              libpq-dev \
+              git \
+              && rm -rf /var/lib/apt/lists/*
+
+            # Create working directory
+            mkdir -p /app
+            cd /app
+
+            # Create requirements.txt
+            cat > requirements.txt << 'EOF'
+            psycopg2-binary==2.9.11
+            pyswisseph==2.10.3.2
+            yfinance==0.2.40
+            EOF
+
+            # Install Python dependencies
+            pip3 install --no-cache-dir -r requirements.txt
+
+            # Create the enhanced hourly lunar tester script
+            cat > enhanced_hourly_lunar_tester.py << 'EOF'
+            import os
+            import yfinance as yf
+            import psycopg2
+            import swisseph as swe
+            from datetime import datetime, timedelta
+            import pytz
+            from typing import Dict, List, Tuple, Optional
+            import logging
+
+            logging.basicConfig(level=logging.INFO)
+            logger = logging.getLogger(__name__)
+
+            class EnhancedHourlyLunarBacktester:
+                def __init__(self):
+                    self.SIGNIFICANT_MOVEMENT_THRESHOLD = 5.0  # 5 degrees minimum lunar movement
+                    self.ACCURACY_THRESHOLD = 0.65  # 65% accuracy required
+                    self.MIN_OCCURRENCES = 5  # Minimum pattern occurrences
+
+                    # PostgreSQL connection
+                    self.conn = psycopg2.connect(
+                        host=os.environ.get('PGHOST', 'localhost'),
+                        database=os.environ.get('PGDATABASE', 'market_data'),
+                        user=os.environ.get('PGUSER', 'postgres'),
+                        password=os.environ.get('PGPASSWORD', ''),
+                        port=os.environ.get('PGPORT', '5432')
+                    )
+
+                    # Initialize Swiss Ephemeris
+                    swe.set_ephe_path('/usr/share/libswe/ephe')  # Standard path
+
+                def get_lunar_position(self, julian_day: float) -> Dict:
+                    """Get moon's position including zodiac sign"""
+                    result = swe.calc_ut(julian_day, swe.MOON)
+                    longitude = result[0][0]
+
+                    # Calculate zodiac sign
+                    sign_num = int(longitude // 30)
+                    signs = ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
+                            'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces']
+
+                    return {
+                        'longitude': longitude,
+                        'zodiac_sign': signs[sign_num],
+                        'degree_in_sign': longitude % 30
+                    }
+
+                def calculate_aspects(self, moon_pos: float) -> List[Dict]:
+                    """Calculate moon's aspects to major planets"""
+                    aspects = []
+                    planets = {
+                        'Sun': swe.SUN,
+                        'Mercury': swe.MERCURY,
+                        'Venus': swe.VENUS,
+                        'Mars': swe.MARS,
+                        'Jupiter': swe.JUPITER,
+                        'Saturn': swe.SATURN,
+                        'Uranus': swe.URANUS,
+                        'Neptune': swe.NEPTUNE,
+                        'Pluto': swe.PLUTO
+                    }
+
+                    julian_day = swe.julday(2024, 1, 1)  # Current reference
+
+                    for planet_name, planet_id in planets.items():
+                        try:
+                            planet_result = swe.calc_ut(julian_day, planet_id)
+                            planet_pos = planet_result[0][0]
+
+                            # Calculate aspect
+                            diff = abs(moon_pos - planet_pos)
+                            if diff > 180:
+                                diff = 360 - diff
+
+                            # Major aspects (with 8-degree orb)
+                            aspect_types = [
+                                (0, 'conjunction'),
+                                (60, 'sextile'),
+                                (90, 'square'),
+                                (120, 'trine'),
+                                (180, 'opposition')
+                            ]
+
+                            for aspect_deg, aspect_name in aspect_types:
+                                if abs(diff - aspect_deg) <= 8:
+                                    aspects.append({
+                                        'planet': planet_name,
+                                        'aspect': aspect_name,
+                                        'orb': abs(diff - aspect_deg)
+                                    })
+                                    break
+                        except Exception as e:
+                            logger.warning(f"Failed to calculate aspect with {planet_name}: {e}")
+
+                    return aspects
+
+                def get_hourly_price_data(self, symbol: str, start_date: str, end_date: str) -> List[Tuple]:
+                    """Fetch hourly price data from database"""
+                    with self.conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT datetime, close_price
+                            FROM market_data_intraday
+                            WHERE symbol = %s
+                            AND datetime BETWEEN %s AND %s
+                            AND interval_type = '1h'
+                            ORDER BY datetime
+                        """, (symbol, start_date, end_date))
+
+                        return cur.fetchall()
+
+                def analyze_lunar_patterns(self, symbol: str = 'PL=F') -> List[Dict]:
+                    """Analyze lunar patterns with hourly precision"""
+                    logger.info(f"🔍 Analyzing hourly lunar patterns for {symbol}")
+
+                    # Get 5 years of hourly data
+                    end_date = datetime.now()
+                    start_date = end_date - timedelta(days=5*365)
+
+                    price_data = self.get_hourly_price_data(
+                        symbol,
+                        start_date.strftime('%Y-%m-%d'),
+                        end_date.strftime('%Y-%m-%d')
+                    )
+
+                    if not price_data:
+                        logger.error(f"No hourly data found for {symbol}")
+                        return []
+
+                    patterns = {}
+
+                    for i in range(len(price_data) - 24):  # Need next 24 hours for prediction
+                        current_time, current_price = price_data[i]
+
+                        # Skip weekends (Saturday=5, Sunday=6)
+                        if current_time.weekday() >= 5:
+                            continue
+
+                        # Get lunar position at this hour
+                        julian_day = swe.julday(
+                            current_time.year,
+                            current_time.month,
+                            current_time.day,
+                            current_time.hour + current_time.minute/60.0
+                        )
+
+                        lunar_pos = self.get_lunar_position(julian_day)
+                        aspects = self.calculate_aspects(lunar_pos['longitude'])
+
+                        # Find next trading day price (skip weekends)
+                        next_price = None
+                        for j in range(i + 1, min(i + 48, len(price_data))):  # Look up to 48 hours ahead
+                            next_time, next_price_val = price_data[j]
+                            if next_time.weekday() < 5:  # Weekday
+                                next_price = next_price_val
+                                break
+
+                        if next_price is None:
+                            continue
+
+                        # Calculate price movement
+                        price_change = ((next_price - current_price) / current_price) * 100
+                        direction = 'up' if price_change > 0.1 else 'down' if price_change < -0.1 else 'flat'
+
+                        if direction == 'flat':
+                            continue
+
+                        # Create pattern keys
+                        sign_pattern = f"Moon in {lunar_pos['zodiac_sign']}"
+
+                        # Record sign pattern
+                        if sign_pattern not in patterns:
+                            patterns[sign_pattern] = {'up': 0, 'down': 0}
+                        patterns[sign_pattern][direction] += 1
+
+                        # Record aspect patterns
+                        for aspect in aspects:
+                            aspect_pattern = f"Moon {aspect['aspect']} {aspect['planet']}"
+                            if aspect_pattern not in patterns:
+                                patterns[aspect_pattern] = {'up': 0, 'down': 0}
+                            patterns[aspect_pattern][direction] += 1
+
+                    # Filter and evaluate patterns
+                    valid_patterns = []
+
+                    for pattern_name, counts in patterns.items():
+                        total = counts['up'] + counts['down']
+
+                        if total >= self.MIN_OCCURRENCES:
+                            up_accuracy = counts['up'] / total
+                            down_accuracy = counts['down'] / total
+
+                            if up_accuracy >= self.ACCURACY_THRESHOLD:
+                                valid_patterns.append({
+                                    'pattern': pattern_name,
+                                    'predicted_direction': 'up',
+                                    'accuracy': up_accuracy,
+                                    'occurrences': total,
+                                    'up_count': counts['up'],
+                                    'down_count': counts['down']
+                                })
+                            elif down_accuracy >= self.ACCURACY_THRESHOLD:
+                                valid_patterns.append({
+                                    'pattern': pattern_name,
+                                    'predicted_direction': 'down',
+                                    'accuracy': down_accuracy,
+                                    'occurrences': total,
+                                    'up_count': counts['up'],
+                                    'down_count': counts['down']
+                                })
+
+                    # Sort by accuracy
+                    valid_patterns.sort(key=lambda x: x['accuracy'], reverse=True)
+
+                    logger.info(f"✨ Found {len(valid_patterns)} valid hourly lunar patterns for {symbol}")
+
+                    return valid_patterns
+
+                def store_patterns(self, patterns: List[Dict], symbol: str = 'PL=F'):
+                    """Store patterns in lunar_patterns table"""
+                    logger.info(f"💾 Storing {len(patterns)} patterns for {symbol}")
+
+                    with self.conn.cursor() as cur:
+                        for pattern in patterns:
+                            cur.execute("""
+                                INSERT INTO lunar_patterns
+                                (symbol, pattern_type, pattern_description, predicted_direction,
+                                 accuracy_percentage, total_occurrences, successful_predictions,
+                                 created_at, data_source)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                ON CONFLICT (symbol, pattern_description, predicted_direction)
+                                DO UPDATE SET
+                                    accuracy_percentage = EXCLUDED.accuracy_percentage,
+                                    total_occurrences = EXCLUDED.total_occurrences,
+                                    successful_predictions = EXCLUDED.successful_predictions,
+                                    created_at = EXCLUDED.created_at
+                            """, (
+                                symbol,
+                                'hourly_lunar_transit',
+                                pattern['pattern'],
+                                pattern['predicted_direction'],
+                                round(pattern['accuracy'] * 100, 2),
+                                pattern['occurrences'],
+                                pattern['up_count'] if pattern['predicted_direction'] == 'up' else pattern['down_count'],
+                                datetime.now(),
+                                'enhanced_hourly_lunar_tester'
+                            ))
+
+                    self.conn.commit()
+                    logger.info(f"✅ Successfully stored {len(patterns)} patterns")
+
+                def run_analysis(self):
+                    """Run the complete hourly lunar analysis"""
+                    logger.info("🚀 Starting Enhanced Hourly Lunar Backtesting Analysis")
+
+                    try:
+                        # Analyze platinum futures with hourly precision
+                        patterns = self.analyze_lunar_patterns('PL=F')
+
+                        if patterns:
+                            # Store results
+                            self.store_patterns(patterns, 'PL=F')
+
+                            # Display top patterns
+                            logger.info("🏆 Top Hourly Lunar Patterns:")
+                            for i, pattern in enumerate(patterns[:10], 1):
+                                logger.info(f"{i}. {pattern['pattern']} → {pattern['predicted_direction']} "
+                                          f"({pattern['accuracy']:.1%} accuracy, {pattern['occurrences']} occurrences)")
+                        else:
+                            logger.warning("No significant hourly lunar patterns found")
+
+                    except Exception as e:
+                        logger.error(f"Analysis failed: {e}")
+                        raise
+                    finally:
+                        self.conn.close()
+
+            if __name__ == "__main__":
+                backtester = EnhancedHourlyLunarBacktester()
+                backtester.run_analysis()
+            EOF
+
+            # Run the enhanced hourly lunar tester
+            echo "🌙 Starting Enhanced Hourly Lunar Analysis..."
+            python3 enhanced_hourly_lunar_tester.py
+        env:
+        - name: PGHOST
+          value: "claude-postgres.time-series-indexing.svc.cluster.local"
+        - name: PGDATABASE
+          value: "market_data"
+        - name: PGUSER
+          value: "claude"
+        - name: PGPASSWORD
+          value: "claude_password"
+        - name: PGPORT
+          value: "5432"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+      restartPolicy: Never
+  backoffLimit: 2

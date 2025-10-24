@@ -1,0 +1,338 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: debug-interpolated-lunar
+  namespace: time-series-indexing
+spec:
+  template:
+    spec:
+      containers:
+      - name: debugger
+        image: python:3.11-slim
+        command: ["/bin/bash"]
+        args:
+          - -c
+          - |
+            echo "🔍 Debugging Interpolated Lunar Pattern Analysis"
+
+            # Install dependencies
+            apt-get update && apt-get install -y \
+              python3 \
+              python3-pip \
+              libpq-dev \
+              gcc \
+              && rm -rf /var/lib/apt/lists/*
+
+            # Install Python dependencies
+            pip3 install --no-cache-dir psycopg2-binary==2.9.11
+
+            # Create debugging script
+            cat > debug_interpolated.py << 'EOF'
+            import os
+            import psycopg2
+            from datetime import datetime, timedelta
+            import logging
+
+            logging.basicConfig(level=logging.INFO)
+            logger = logging.getLogger(__name__)
+
+            class InterpolatedLunarDebugger:
+                def __init__(self):
+                    # PostgreSQL connection using environment variables from secrets
+                    self.conn = psycopg2.connect(
+                        host=os.environ.get('DB_HOST'),
+                        database=os.environ.get('DB_NAME'),
+                        user=os.environ.get('DB_USER'),
+                        password=os.environ.get('DB_PASSWORD'),
+                        port=os.environ.get('DB_PORT', '5432')
+                    )
+                    self.MOON_HOURLY_MOTION = 0.54
+
+                def debug_astro_data_availability(self):
+                    """Check if we have astrological data for the date range"""
+                    logger.info("🔍 Checking astrological data availability...")
+
+                    start_date = datetime(2023, 11, 27)
+                    end_date = datetime(2024, 10, 24)
+
+                    with self.conn.cursor() as cur:
+                        # Check daily_planetary_positions for Moon
+                        cur.execute("""
+                            SELECT
+                                COUNT(*) as total_records,
+                                MIN(trade_date) as earliest,
+                                MAX(trade_date) as latest
+                            FROM daily_planetary_positions
+                            WHERE planet = 'Moon'
+                            AND trade_date BETWEEN %s AND %s
+                        """, (start_date.date(), end_date.date()))
+
+                        result = cur.fetchone()
+                        logger.info(f"📊 Moon positions: {result[0]} records from {result[1]} to {result[2]}")
+
+                        if result[0] == 0:
+                            logger.error("❌ NO MOON POSITION DATA FOUND!")
+                            return False
+
+                        # Check daily_planetary_aspects for Moon
+                        cur.execute("""
+                            SELECT
+                                COUNT(*) as total_aspects,
+                                MIN(trade_date) as earliest,
+                                MAX(trade_date) as latest
+                            FROM daily_planetary_aspects
+                            WHERE planet1 = 'Moon'
+                            AND trade_date BETWEEN %s AND %s
+                        """, (start_date.date(), end_date.date()))
+
+                        result = cur.fetchone()
+                        logger.info(f"🌟 Moon aspects: {result[0]} records from {result[1]} to {result[2]}")
+
+                        # Sample some Moon positions
+                        cur.execute("""
+                            SELECT trade_date, longitude, zodiac_sign, degree_in_sign
+                            FROM daily_planetary_positions
+                            WHERE planet = 'Moon'
+                            AND trade_date BETWEEN %s AND %s
+                            ORDER BY trade_date
+                            LIMIT 5
+                        """, (start_date.date(), end_date.date()))
+
+                        positions = cur.fetchall()
+                        logger.info("📋 Sample Moon positions:")
+                        for date, lng, sign, degree in positions:
+                            logger.info(f"   {date}: {lng:.2f}° in {sign} ({degree:.2f}°)")
+
+                        return result[0] > 0
+
+                def debug_interpolation_logic(self):
+                    """Test the interpolation logic with sample data"""
+                    logger.info("🧮 Testing interpolation logic...")
+
+                    test_date = datetime(2024, 1, 15, 10, 0)  # January 15, 2024 at 10 AM
+
+                    with self.conn.cursor() as cur:
+                        # Get Moon positions for this day and next day
+                        current_date = test_date.date()
+                        next_date = current_date + timedelta(days=1)
+
+                        cur.execute("""
+                            SELECT trade_date, longitude, zodiac_sign, degree_in_sign
+                            FROM daily_planetary_positions
+                            WHERE planet = 'Moon'
+                            AND trade_date IN (%s, %s)
+                            ORDER BY trade_date
+                        """, (current_date, next_date))
+
+                        results = cur.fetchall()
+                        logger.info(f"📊 Retrieved {len(results)} positions for interpolation test")
+
+                        if len(results) >= 2:
+                            day1_date, day1_long, day1_sign, day1_degree = results[0]
+                            day2_date, day2_long, day2_sign, day2_degree = results[1]
+
+                            logger.info(f"📅 Day 1 ({day1_date}): {day1_long:.2f}° in {day1_sign}")
+                            logger.info(f"📅 Day 2 ({day2_date}): {day2_long:.2f}° in {day2_sign}")
+
+                            # Test interpolation for different hours
+                            for hour in [0, 6, 12, 18]:
+                                # Handle longitude wraparound
+                                longitude_diff = day2_long - day1_long
+                                if longitude_diff > 180:
+                                    longitude_diff -= 360
+                                elif longitude_diff < -180:
+                                    longitude_diff += 360
+
+                                hour_fraction = hour / 24.0
+                                interpolated_longitude = (day1_long + (longitude_diff * hour_fraction)) % 360
+
+                                # Calculate zodiac sign
+                                sign_num = int(interpolated_longitude // 30)
+                                signs = ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
+                                        'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces']
+
+                                logger.info(f"   Hour {hour:2d}: {interpolated_longitude:.2f}° in {signs[sign_num]}")
+
+                        else:
+                            logger.error(f"❌ Only found {len(results)} positions for interpolation test")
+
+                def debug_aspect_data(self):
+                    """Check aspect data availability"""
+                    logger.info("🌟 Checking aspect data...")
+
+                    test_date = datetime(2024, 1, 15)
+
+                    with self.conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT planet1, planet2, aspect_type, orb, separating_angle
+                            FROM daily_planetary_aspects
+                            WHERE trade_date = %s
+                            AND planet1 = 'Moon'
+                            AND orb <= 8.0
+                            ORDER BY orb
+                        """, (test_date.date(),))
+
+                        aspects = cur.fetchall()
+                        logger.info(f"📊 Found {len(aspects)} Moon aspects for {test_date.date()}")
+
+                        for planet1, planet2, aspect_type, orb, angle in aspects[:5]:
+                            logger.info(f"   Moon {aspect_type} {planet2} (orb: {orb:.2f}°)")
+
+                def debug_pattern_detection_thresholds(self):
+                    """Test pattern detection with relaxed thresholds"""
+                    logger.info("🎯 Testing pattern detection thresholds...")
+
+                    # Simulate some pattern data
+                    test_patterns = {
+                        'Moon in Aries': {'up': 3, 'down': 2},      # 60% accuracy, 5 total
+                        'Moon in Taurus': {'up': 7, 'down': 3},     # 70% accuracy, 10 total
+                        'Moon square Mars': {'up': 4, 'down': 1},   # 80% accuracy, 5 total
+                        'Moon trine Venus': {'up': 2, 'down': 8},   # 20% accuracy, 10 total
+                    }
+
+                    ACCURACY_THRESHOLD = 0.65
+                    MIN_OCCURRENCES = 5
+
+                    valid_patterns = []
+
+                    for pattern_name, counts in test_patterns.items():
+                        total = counts['up'] + counts['down']
+                        logger.info(f"🔍 Testing {pattern_name}: {counts['up']} up, {counts['down']} down (total: {total})")
+
+                        if total >= MIN_OCCURRENCES:
+                            up_accuracy = counts['up'] / total
+                            down_accuracy = counts['down'] / total
+
+                            logger.info(f"   Up accuracy: {up_accuracy:.1%}, Down accuracy: {down_accuracy:.1%}")
+
+                            if up_accuracy >= ACCURACY_THRESHOLD:
+                                logger.info(f"   ✅ Valid UP pattern: {up_accuracy:.1%} accuracy")
+                                valid_patterns.append(pattern_name)
+                            elif down_accuracy >= ACCURACY_THRESHOLD:
+                                logger.info(f"   ✅ Valid DOWN pattern: {down_accuracy:.1%} accuracy")
+                                valid_patterns.append(pattern_name)
+                            else:
+                                logger.info(f"   ❌ Not accurate enough (max: {max(up_accuracy, down_accuracy):.1%})")
+                        else:
+                            logger.info(f"   ❌ Not enough occurrences (need {MIN_OCCURRENCES}, got {total})")
+
+                    logger.info(f"📈 Valid patterns in test: {len(valid_patterns)}")
+
+                def debug_price_movements_analysis(self):
+                    """Analyze actual price movements to see if the issue is in movement detection"""
+                    logger.info("📈 Analyzing price movements...")
+
+                    start_date = datetime(2023, 11, 27)
+                    end_date = datetime(2024, 10, 24)
+
+                    with self.conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT datetime, close_price
+                            FROM market_data_intraday
+                            WHERE symbol = 'PLATINUM_FUTURES'
+                            AND datetime BETWEEN %s AND %s
+                            AND interval_type = '1h'
+                            ORDER BY datetime
+                            LIMIT 200
+                        """, (start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+
+                        price_data = cur.fetchall()
+                        logger.info(f"📊 Got {len(price_data)} price points for movement analysis")
+
+                        movements = {'up': 0, 'down': 0, 'flat': 0}
+                        weekend_skips = 0
+
+                        for i in range(min(50, len(price_data) - 24)):
+                            current_time, current_price = price_data[i]
+
+                            # Skip weekends
+                            if current_time.weekday() >= 5:
+                                weekend_skips += 1
+                                continue
+
+                            # Find next trading day price
+                            next_price = None
+                            for j in range(i + 1, min(i + 48, len(price_data))):
+                                next_time, next_price_val = price_data[j]
+                                if next_time.weekday() < 5:
+                                    next_price = next_price_val
+                                    break
+
+                            if next_price is None:
+                                continue
+
+                            # Calculate price movement
+                            price_change = ((next_price - current_price) / current_price) * 100
+                            direction = 'up' if price_change > 0.1 else 'down' if price_change < -0.1 else 'flat'
+                            movements[direction] += 1
+
+                            if i < 5:  # Log first few
+                                logger.info(f"   Sample {i+1}: {current_time} ${current_price:.2f} → ${next_price:.2f} "
+                                          f"({price_change:+.2f}%) = {direction}")
+
+                        logger.info(f"📊 Movement distribution (first 50 samples):")
+                        logger.info(f"   Up: {movements['up']}, Down: {movements['down']}, Flat: {movements['flat']}")
+                        logger.info(f"   Weekend skips: {weekend_skips}")
+
+                def run_debug(self):
+                    """Run all debugging tests"""
+                    logger.info("🚀 Starting Comprehensive Interpolated Lunar Debug")
+
+                    try:
+                        astro_available = self.debug_astro_data_availability()
+
+                        if astro_available:
+                            self.debug_interpolation_logic()
+                            self.debug_aspect_data()
+
+                        self.debug_pattern_detection_thresholds()
+                        self.debug_price_movements_analysis()
+
+                        logger.info("✅ Debugging completed!")
+
+                    except Exception as e:
+                        logger.error(f"❌ Debug failed: {e}")
+                        raise
+                    finally:
+                        self.conn.close()
+
+            if __name__ == "__main__":
+                debugger = InterpolatedLunarDebugger()
+                debugger.run_debug()
+            EOF
+
+            # Run the debugging script
+            echo "🔍 Starting interpolated lunar debugging..."
+            python3 debug_interpolated.py
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+        resources:
+          requests:
+            memory: "500Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+      restartPolicy: Never
+  backoffLimit: 1

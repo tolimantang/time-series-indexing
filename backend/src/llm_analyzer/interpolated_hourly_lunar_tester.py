@@ -1,0 +1,350 @@
+#!/usr/bin/env python3
+"""
+Interpolated Hourly Lunar Pattern Tester
+
+Uses PostgreSQL astrological data with interpolation for hourly precision.
+Tests lunar transits with hourly price movements for platinum futures.
+Follows the same architecture as simple_lunar_tester.py but with hourly data.
+
+Architecture:
+- Daily lunar positions from daily_planetary_positions table
+- Interpolate hourly Moon positions (Moon moves ~0.54°/hour)
+- Hourly price data from market_data_intraday table
+- Store results in lunar_patterns table
+"""
+
+import logging
+import os
+from datetime import datetime, timedelta
+from typing import Dict, List, Any, Optional, Tuple
+import psycopg2
+import math
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+class InterpolatedHourlyLunarTester:
+    """Hourly lunar tester using PostgreSQL astrological data with interpolation"""
+
+    def __init__(self, db_config):
+        self.db_config = db_config
+        self.conn = None
+        self.ACCURACY_THRESHOLD = 0.65  # 65% accuracy required
+        self.MIN_OCCURRENCES = 5  # Minimum pattern occurrences
+        self.MOON_HOURLY_MOTION = 0.54  # Approximate degrees per hour
+
+    def connect_db(self):
+        self.conn = psycopg2.connect(**self.db_config)
+        logger.info("Connected to database")
+
+    def interpolate_moon_position(self, trade_date: datetime, hour: int) -> Dict[str, Any]:
+        """Interpolate Moon position for specific hour using daily positions"""
+        cursor = self.conn.cursor()
+
+        # Get Moon positions for this day and next day
+        query = """
+        SELECT trade_date, longitude, zodiac_sign, degree_in_sign
+        FROM daily_planetary_positions
+        WHERE planet = 'Moon'
+          AND trade_date IN (%s, %s)
+        ORDER BY trade_date
+        """
+
+        current_date = trade_date.date()
+        next_date = current_date + timedelta(days=1)
+
+        cursor.execute(query, (current_date, next_date))
+        results = cursor.fetchall()
+        cursor.close()
+
+        if len(results) < 2:
+            # If we don't have both days, use single day data
+            if len(results) == 1:
+                _, longitude, zodiac_sign, degree_in_sign = results[0]
+                # Add interpolation based on hour (approximate)
+                hourly_offset = hour * self.MOON_HOURLY_MOTION
+                interpolated_longitude = (longitude + hourly_offset) % 360
+
+                # Recalculate zodiac sign
+                sign_num = int(interpolated_longitude // 30)
+                signs = ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
+                        'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces']
+
+                return {
+                    'longitude': interpolated_longitude,
+                    'zodiac_sign': signs[sign_num],
+                    'degree_in_sign': interpolated_longitude % 30
+                }
+            else:
+                return None
+
+        # Interpolate between two daily positions
+        day1_date, day1_long, day1_sign, day1_degree = results[0]
+        day2_date, day2_long, day2_sign, day2_degree = results[1]
+
+        # Handle longitude wraparound (e.g., 359° to 1°)
+        longitude_diff = day2_long - day1_long
+        if longitude_diff > 180:
+            longitude_diff -= 360
+        elif longitude_diff < -180:
+            longitude_diff += 360
+
+        # Interpolate for the specific hour
+        hour_fraction = hour / 24.0
+        interpolated_longitude = (day1_long + (longitude_diff * hour_fraction)) % 360
+
+        # Calculate zodiac sign for interpolated position
+        sign_num = int(interpolated_longitude // 30)
+        signs = ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
+                'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces']
+
+        return {
+            'longitude': interpolated_longitude,
+            'zodiac_sign': signs[sign_num],
+            'degree_in_sign': interpolated_longitude % 30
+        }
+
+    def get_daily_planetary_aspects(self, trade_date: datetime) -> List[Dict]:
+        """Get all planetary aspects for a given date"""
+        cursor = self.conn.cursor()
+
+        query = """
+        SELECT planet1, planet2, aspect_type, orb, separating_angle
+        FROM daily_planetary_aspects
+        WHERE trade_date = %s
+          AND planet1 = 'Moon'
+          AND orb <= 8.0
+        ORDER BY orb
+        """
+
+        cursor.execute(query, (trade_date.date(),))
+        results = cursor.fetchall()
+        cursor.close()
+
+        aspects = []
+        for planet1, planet2, aspect_type, orb, separating_angle in results:
+            aspects.append({
+                'planet': planet2,
+                'aspect': aspect_type,
+                'orb': float(orb)
+            })
+
+        return aspects
+
+    def get_hourly_price_data(self, symbol: str, start_date: str, end_date: str) -> List[Tuple]:
+        """Fetch hourly price data from database"""
+        cursor = self.conn.cursor()
+
+        query = """
+        SELECT datetime, close_price
+        FROM market_data_intraday
+        WHERE symbol = %s
+          AND datetime BETWEEN %s AND %s
+          AND interval_type = '1h'
+        ORDER BY datetime
+        """
+
+        cursor.execute(query, (symbol, start_date, end_date))
+        results = cursor.fetchall()
+        cursor.close()
+
+        return results
+
+    def analyze_hourly_lunar_patterns(self, symbol: str = 'PLATINUM_FUTURES') -> List[Dict]:
+        """Analyze hourly lunar patterns using interpolated positions"""
+        logger.info(f"🔍 Analyzing interpolated hourly lunar patterns for {symbol}")
+
+        # Use actual data range: Nov 2023 to Oct 2024
+        start_date = datetime(2023, 11, 27)
+        end_date = datetime(2024, 10, 24)
+
+        logger.info(f"📅 Using date range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+
+        price_data = self.get_hourly_price_data(
+            symbol,
+            start_date.strftime('%Y-%m-%d'),
+            end_date.strftime('%Y-%m-%d')
+        )
+
+        if not price_data:
+            logger.error(f"No hourly data found for {symbol}")
+            return []
+
+        logger.info(f"📊 Processing {len(price_data):,} hourly data points for interpolated lunar analysis")
+        patterns = {}
+
+        for i in range(len(price_data) - 24):  # Need next 24 hours for prediction
+            current_time, current_price = price_data[i]
+
+            # Skip weekends (Saturday=5, Sunday=6)
+            if current_time.weekday() >= 5:
+                continue
+
+            # Get interpolated lunar position at this hour
+            lunar_pos = self.interpolate_moon_position(current_time, current_time.hour)
+            if not lunar_pos:
+                continue
+
+            # Get daily aspects for this date
+            aspects = self.get_daily_planetary_aspects(current_time)
+
+            # Find next trading day price (skip weekends)
+            next_price = None
+            for j in range(i + 1, min(i + 48, len(price_data))):  # Look up to 48 hours ahead
+                next_time, next_price_val = price_data[j]
+                if next_time.weekday() < 5:  # Weekday
+                    next_price = next_price_val
+                    break
+
+            if next_price is None:
+                continue
+
+            # Calculate price movement
+            price_change = ((next_price - current_price) / current_price) * 100
+            direction = 'up' if price_change > 0.1 else 'down' if price_change < -0.1 else 'flat'
+
+            if direction == 'flat':
+                continue
+
+            # Create pattern keys
+            sign_pattern = f"Moon in {lunar_pos['zodiac_sign']}"
+
+            # Record sign pattern
+            if sign_pattern not in patterns:
+                patterns[sign_pattern] = {'up': 0, 'down': 0}
+            patterns[sign_pattern][direction] += 1
+
+            # Record aspect patterns
+            for aspect in aspects:
+                aspect_pattern = f"Moon {aspect['aspect']} {aspect['planet']}"
+                if aspect_pattern not in patterns:
+                    patterns[aspect_pattern] = {'up': 0, 'down': 0}
+                patterns[aspect_pattern][direction] += 1
+
+        # Filter and evaluate patterns
+        valid_patterns = []
+
+        for pattern_name, counts in patterns.items():
+            total = counts['up'] + counts['down']
+
+            if total >= self.MIN_OCCURRENCES:
+                up_accuracy = counts['up'] / total
+                down_accuracy = counts['down'] / total
+
+                if up_accuracy >= self.ACCURACY_THRESHOLD:
+                    valid_patterns.append({
+                        'pattern': pattern_name,
+                        'predicted_direction': 'up',
+                        'accuracy': up_accuracy,
+                        'occurrences': total,
+                        'up_count': counts['up'],
+                        'down_count': counts['down']
+                    })
+                elif down_accuracy >= self.ACCURACY_THRESHOLD:
+                    valid_patterns.append({
+                        'pattern': pattern_name,
+                        'predicted_direction': 'down',
+                        'accuracy': down_accuracy,
+                        'occurrences': total,
+                        'up_count': counts['up'],
+                        'down_count': counts['down']
+                    })
+
+        # Sort by accuracy
+        valid_patterns.sort(key=lambda x: x['accuracy'], reverse=True)
+
+        logger.info(f"✨ Found {len(valid_patterns)} valid interpolated hourly lunar patterns for {symbol}")
+
+        return valid_patterns
+
+    def store_patterns(self, patterns: List[Dict], symbol: str = 'PLATINUM_FUTURES'):
+        """Store patterns in lunar_patterns table"""
+        logger.info(f"💾 Storing {len(patterns)} interpolated patterns for {symbol}")
+
+        cursor = self.conn.cursor()
+
+        for pattern in patterns:
+            cursor.execute("""
+                INSERT INTO lunar_patterns
+                (symbol, pattern_type, pattern_description, predicted_direction,
+                 accuracy_percentage, total_occurrences, successful_predictions,
+                 created_at, data_source)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (symbol, pattern_description, predicted_direction)
+                DO UPDATE SET
+                    accuracy_percentage = EXCLUDED.accuracy_percentage,
+                    total_occurrences = EXCLUDED.total_occurrences,
+                    successful_predictions = EXCLUDED.successful_predictions,
+                    created_at = EXCLUDED.created_at
+            """, (
+                symbol,
+                'hourly_interpolated_lunar_transit',
+                pattern['pattern'],
+                pattern['predicted_direction'],
+                round(pattern['accuracy'] * 100, 2),
+                pattern['occurrences'],
+                pattern['up_count'] if pattern['predicted_direction'] == 'up' else pattern['down_count'],
+                datetime.now(),
+                'interpolated_hourly_lunar_tester'
+            ))
+
+        self.conn.commit()
+        cursor.close()
+        logger.info(f"✅ Successfully stored {len(patterns)} interpolated patterns")
+
+    def run_analysis(self):
+        """Run the complete interpolated hourly lunar analysis"""
+        logger.info("🚀 Starting Interpolated Hourly Lunar Backtesting Analysis")
+
+        self.connect_db()
+
+        try:
+            # Analyze platinum futures with hourly precision using interpolation
+            patterns = self.analyze_hourly_lunar_patterns('PLATINUM_FUTURES')
+
+            if patterns:
+                # Store results
+                self.store_patterns(patterns, 'PLATINUM_FUTURES')
+
+                # Display top patterns
+                logger.info("🏆 Top Interpolated Hourly Lunar Patterns:")
+                for i, pattern in enumerate(patterns[:15], 1):
+                    logger.info(f"{i:2d}. {pattern['pattern']:<30} → {pattern['predicted_direction']:<4} "
+                              f"({pattern['accuracy']:.1%} accuracy, {pattern['occurrences']:2d} occurrences)")
+
+                logger.info(f"\\n📈 Summary: Found {len(patterns)} predictive interpolated lunar patterns with ≥65% accuracy")
+            else:
+                logger.warning("No significant interpolated hourly lunar patterns found")
+
+            logger.info("🎯 Interpolated hourly lunar analysis completed successfully!")
+
+        except Exception as e:
+            logger.error(f"Analysis failed: {e}")
+            raise
+        finally:
+            if self.conn:
+                self.conn.close()
+
+def main():
+    """Main execution"""
+    # Database configuration using environment variables
+    db_config = {
+        'host': os.getenv('DB_HOST', 'localhost'),
+        'user': os.getenv('DB_USER', 'postgres'),
+        'password': os.getenv('DB_PASSWORD', ''),
+        'database': os.getenv('DB_NAME', 'financial_postgres'),
+        'port': int(os.getenv('DB_PORT', '5432'))
+    }
+
+    print("🚀 Starting Interpolated Hourly Lunar Analysis")
+    print("Using PostgreSQL astrological data with interpolation")
+    print("Testing: Interpolated Lunar Transit → Next Hour Platinum Price Movement")
+
+    tester = InterpolatedHourlyLunarTester(db_config)
+    tester.run_analysis()
+
+    print("✅ Interpolated hourly lunar analysis completed!")
+
+if __name__ == "__main__":
+    main()
