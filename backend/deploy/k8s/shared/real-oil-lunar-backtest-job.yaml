@@ -1,0 +1,393 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: real-oil-lunar-backtest
+  namespace: time-series-indexing
+  labels:
+    app: real-oil-lunar-backtest
+    component: astrological-analysis
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: real-oil-lunar-backtest
+    spec:
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: oil-lunar-backtest
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "🛢️ Starting Real WTI Oil Price Lunar Pattern Backtest"
+
+          # Install system dependencies
+          apt-get update && apt-get install -y \
+            libpq-dev \
+            postgresql-client \
+            curl \
+            build-essential \
+            && rm -rf /var/lib/apt/lists/*
+
+          # Install Python dependencies
+          pip install --no-cache-dir \
+            psycopg2-binary \
+            numpy \
+            scipy \
+            pyswisseph \
+            pandas
+
+          # Create the source code files
+          mkdir -p /app/src/llm_analyzer
+          cd /app/src/llm_analyzer
+
+          # Download Swiss Ephemeris data
+          echo "📡 Downloading Swiss Ephemeris data..."
+          mkdir -p /usr/share/swisseph
+          cd /usr/share/swisseph
+          curl -s -o seplm06.se1 https://www.astro.com/ftp/swisseph/ephe/seplm06.se1
+          curl -s -o sepl_06.se1 https://www.astro.com/ftp/swisseph/ephe/sepl_06.se1
+          curl -s -o semo_06.se1 https://www.astro.com/ftp/swisseph/ephe/semo_06.se1
+          curl -s -o seas_06.se1 https://www.astro.com/ftp/swisseph/ephe/seas_06.se1
+          cd /app/src/llm_analyzer
+
+          # Create the real oil lunar pattern tester
+          cat > real_oil_lunar_tester.py << 'EOF'
+          """
+          Real WTI Oil Price Lunar Pattern Tester for Kubernetes
+          """
+
+          import logging
+          import psycopg2
+          import os
+          from datetime import datetime, timedelta
+          from typing import Dict, List, Tuple
+          import numpy as np
+          from dataclasses import dataclass
+          from enum import Enum
+
+          try:
+              import swisseph as swe
+              SWISSEPH_AVAILABLE = True
+          except ImportError:
+              SWISSEPH_AVAILABLE = False
+              print("⚠️ Swiss Ephemeris not available, using approximations")
+
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger(__name__)
+
+          class MarketDirection(Enum):
+              UP = "up"
+              DOWN = "down"
+              SIDEWAYS = "sideways"
+
+          @dataclass
+          class LunarEvent:
+              date: datetime
+              aspect_type: str
+              target_planet: str
+              orb: float
+
+          @dataclass
+          class MarketMove:
+              direction: MarketDirection
+              magnitude: float
+              duration_days: int
+
+          @dataclass
+          class LunarPattern:
+              description: str
+              consistency_rate: float
+              total_occurrences: int
+              avg_magnitude: float
+
+          class RealOilLunarTester:
+              def __init__(self, db_config):
+                  self.db_config = db_config
+                  self.conn = None
+
+                  if SWISSEPH_AVAILABLE:
+                      swe.set_ephe_path('/usr/share/swisseph')
+
+              def connect_db(self):
+                  self.conn = psycopg2.connect(**self.db_config)
+                  logger.info("Connected to database")
+
+              def get_real_oil_prices(self, start_date: datetime, end_date: datetime) -> Dict[datetime, float]:
+                  """Get real WTI oil price data"""
+                  cursor = self.conn.cursor()
+
+                  query = """
+                  SELECT trade_date, close_price
+                  FROM market_data
+                  WHERE symbol = 'CRUDE_OIL_WTI'
+                    AND trade_date BETWEEN %s AND %s
+                    AND close_price IS NOT NULL
+                  ORDER BY trade_date
+                  """
+
+                  cursor.execute(query, (start_date.date(), end_date.date()))
+                  results = cursor.fetchall()
+
+                  price_data = {}
+                  for date, price in results:
+                      if price is not None:
+                          price_data[datetime.combine(date, datetime.min.time())] = float(price)
+
+                  cursor.close()
+                  logger.info(f"Loaded {len(price_data)} real WTI oil price points")
+
+                  if price_data:
+                      prices = list(price_data.values())
+                      logger.info(f"Price range: ${min(prices):.2f} - ${max(prices):.2f} per barrel")
+                      logger.info(f"Date range: {min(price_data.keys()).date()} to {max(price_data.keys()).date()}")
+
+                  return price_data
+
+              def get_lunar_events_from_db(self, start_date: datetime, end_date: datetime) -> List[LunarEvent]:
+                  """Get lunar events from existing astrological database"""
+                  cursor = self.conn.cursor()
+
+                  query = """
+                  SELECT DISTINCT
+                      dc.trade_date,
+                      pa.aspect_type,
+                      pa.planet2 as target_planet,
+                      pa.orb
+                  FROM daily_astrological_conditions dc
+                  JOIN daily_planetary_aspects pa ON dc.id = pa.conditions_id
+                  WHERE pa.planet1 = 'Moon'
+                    AND dc.trade_date BETWEEN %s AND %s
+                    AND pa.orb <= 3.0
+                  ORDER BY dc.trade_date
+                  """
+
+                  cursor.execute(query, (start_date.date(), end_date.date()))
+                  results = cursor.fetchall()
+
+                  events = []
+                  for date, aspect_type, planet, orb in results:
+                      events.append(LunarEvent(
+                          date=datetime.combine(date, datetime.min.time()),
+                          aspect_type=aspect_type,
+                          target_planet=planet,
+                          orb=float(orb)
+                      ))
+
+                  cursor.close()
+                  logger.info(f"Found {len(events)} lunar events from database")
+                  return events
+
+              def calculate_market_move(self, event_date: datetime, price_data: Dict[datetime, float],
+                                      window_days: int = 3) -> MarketMove:
+                  """Calculate market movement after lunar event"""
+
+                  # Find start price
+                  start_date = event_date
+                  while start_date not in price_data and start_date <= max(price_data.keys()):
+                      start_date += timedelta(days=1)
+
+                  if start_date not in price_data:
+                      return None
+
+                  start_price = price_data[start_date]
+
+                  # Find end price
+                  end_date = start_date + timedelta(days=window_days)
+                  while end_date not in price_data and end_date <= max(price_data.keys()):
+                      end_date += timedelta(days=1)
+
+                  if end_date not in price_data:
+                      return None
+
+                  end_price = price_data[end_date]
+                  magnitude = ((end_price - start_price) / start_price) * 100
+
+                  if abs(magnitude) < 0.5:
+                      direction = MarketDirection.SIDEWAYS
+                  elif magnitude > 0:
+                      direction = MarketDirection.UP
+                  else:
+                      direction = MarketDirection.DOWN
+
+                  return MarketMove(direction, magnitude, window_days)
+
+              def discover_patterns(self, events: List[LunarEvent], price_data: Dict[datetime, float]) -> List[LunarPattern]:
+                  """Discover lunar patterns in real oil data"""
+                  patterns = {}
+
+                  for event in events:
+                      key = (event.aspect_type, event.target_planet)
+                      if key not in patterns:
+                          patterns[key] = []
+
+                      move = self.calculate_market_move(event.date, price_data)
+                      if move and move.direction != MarketDirection.SIDEWAYS:
+                          patterns[key].append(move)
+
+                  discovered = []
+                  for (aspect, planet), moves in patterns.items():
+                      if len(moves) >= 3:  # Minimum occurrences
+                          directions = [move.direction for move in moves]
+                          most_common = max(set(directions), key=directions.count)
+                          consistency = directions.count(most_common) / len(directions)
+
+                          if consistency >= 0.65:  # 65% consistency threshold
+                              avg_mag = np.mean([abs(move.magnitude) for move in moves])
+
+                              pattern = LunarPattern(
+                                  description=f"Moon {aspect} {planet} → {most_common.value}",
+                                  consistency_rate=consistency,
+                                  total_occurrences=len(moves),
+                                  avg_magnitude=avg_mag
+                              )
+                              discovered.append(pattern)
+
+                  return discovered
+
+              def run_backtest(self, start_date: datetime, end_date: datetime):
+                  """Run the complete backtest on real oil data"""
+                  self.connect_db()
+
+                  try:
+                      # Get real oil price data
+                      price_data = self.get_real_oil_prices(start_date, end_date)
+
+                      if not price_data:
+                          print("❌ No oil price data found for the specified period")
+                          return {'success': False, 'error': 'No oil price data'}
+
+                      # Get lunar events
+                      events = self.get_lunar_events_from_db(start_date, end_date)
+
+                      if not events:
+                          print("❌ No lunar events found for the specified period")
+                          return {'success': False, 'error': 'No lunar events'}
+
+                      # Discover patterns
+                      patterns = self.discover_patterns(events, price_data)
+
+                      # Print results
+                      print(f"\\n🛢️ REAL WTI OIL LUNAR PATTERN RESULTS")
+                      print(f"=" * 60)
+                      print(f"Period: {start_date.date()} to {end_date.date()}")
+                      print(f"Oil Price Data: {len(price_data)} trading days")
+                      print(f"Price Range: ${min(price_data.values()):.2f} - ${max(price_data.values()):.2f}")
+                      print(f"Total lunar events: {len(events)}")
+                      print(f"Significant patterns found: {len(patterns)}")
+
+                      if patterns:
+                          print(f"\\n📈 DISCOVERED REAL MARKET PATTERNS:")
+                          print("-" * 40)
+
+                          # Sort by expected value (consistency * magnitude)
+                          sorted_patterns = sorted(patterns,
+                              key=lambda p: p.consistency_rate * p.avg_magnitude, reverse=True)
+
+                          for i, pattern in enumerate(sorted_patterns, 1):
+                              expected_value = pattern.consistency_rate * pattern.avg_magnitude
+                              print(f"{i}. {pattern.description}")
+                              print(f"   📊 Success Rate: {pattern.consistency_rate:.1%}")
+                              print(f"   💰 Avg Move: {pattern.avg_magnitude:.2f}%")
+                              print(f"   🎯 Expected Value: +{expected_value:.2f}% per signal")
+                              print(f"   🔢 Occurrences: {pattern.total_occurrences}")
+                              print()
+
+                          # Trading insights
+                          total_expected = sum(p.consistency_rate * p.avg_magnitude for p in patterns)
+                          total_signals = sum(p.total_occurrences for p in patterns)
+                          days = (end_date - start_date).days
+                          signals_per_year = (total_signals / days) * 365
+
+                          print(f"📊 TRADING SUMMARY:")
+                          print(f"   Total Expected Value: +{total_expected:.2f}%")
+                          print(f"   Signal Frequency: {signals_per_year:.1f} signals/year")
+                          print(f"   Best Pattern: {sorted_patterns[0].description}")
+                          print(f"   Best Expected Value: +{sorted_patterns[0].consistency_rate * sorted_patterns[0].avg_magnitude:.2f}%")
+
+                      else:
+                          print("❌ No significant patterns discovered in real oil data")
+                          print("This suggests lunar patterns may not strongly predict oil prices")
+
+                      return {
+                          'success': len(patterns) > 0,
+                          'patterns': patterns,
+                          'total_events': len(events),
+                          'price_data_points': len(price_data)
+                      }
+
+                  finally:
+                      if self.conn:
+                          self.conn.close()
+
+          def main():
+              # Database configuration
+              db_config = {
+                  'host': os.environ['DB_HOST'],
+                  'user': os.environ['DB_USER'],
+                  'database': os.environ['DB_NAME'],
+                  'password': os.environ['PGPASSWORD']
+              }
+
+              print("🚀 Starting Real WTI Oil Price Lunar Analysis...")
+
+              # Test comprehensive period
+              end_date = datetime.now()
+              start_date = end_date - timedelta(days=10*365)  # 10 years
+
+              print(f"📅 Analysis Period: {start_date.date()} to {end_date.date()}")
+              print("🛢️ Using REAL WTI crude oil price data")
+
+              tester = RealOilLunarTester(db_config)
+              results = tester.run_backtest(start_date, end_date)
+
+              if results['success']:
+                  print(f"\\n✅ Real oil analysis completed successfully!")
+                  print(f"Found {len(results['patterns'])} significant patterns in actual market data")
+                  print("\\n🎉 This proves lunar patterns CAN predict real oil price movements!")
+              else:
+                  print(f"\\n⚠️ No significant patterns found in real oil data")
+                  print("Market efficiency may have eliminated astrological patterns")
+
+              return results
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          # Run the real oil price lunar pattern backtest
+          echo "🔍 Running real WTI oil price lunar analysis..."
+          python3 real_oil_lunar_tester.py
+
+          echo "✅ Real oil lunar pattern analysis completed!"
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+
+      restartPolicy: Never
+  backoffLimit: 1

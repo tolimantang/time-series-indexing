@@ -1,0 +1,127 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: check-zodiac-signs
+  namespace: time-series-indexing
+  labels:
+    app: check-zodiac-signs
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: check-zodiac-signs
+    spec:
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: check-signs
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "🔍 Checking Available Zodiac Sign Data"
+
+          # Install dependencies
+          apt-get update && apt-get install -y libpq-dev
+          pip install --no-cache-dir psycopg2-binary
+
+          # Check database schema
+          cat > check_signs.py << 'EOF'
+          import psycopg2
+          import os
+
+          db_config = {
+              'host': os.environ['DB_HOST'],
+              'user': os.environ['DB_USER'],
+              'database': os.environ['DB_NAME'],
+              'password': os.environ['PGPASSWORD']
+          }
+
+          conn = psycopg2.connect(**db_config)
+          cursor = conn.cursor()
+
+          print("📊 Database Schema Check:")
+          print("=" * 40)
+
+          # Check if we have planetary positions table
+          cursor.execute("""
+          SELECT table_name, column_name, data_type
+          FROM information_schema.columns
+          WHERE table_name LIKE '%planet%' OR table_name LIKE '%position%'
+          ORDER BY table_name, ordinal_position
+          """)
+
+          print("\n📋 Planetary Position Tables:")
+          for table, column, dtype in cursor.fetchall():
+              print(f"  {table}.{column} ({dtype})")
+
+          # Check if we have zodiac sign data
+          cursor.execute("""
+          SELECT table_name FROM information_schema.tables
+          WHERE table_name LIKE '%planet%' OR table_name LIKE '%position%' OR table_name LIKE '%sign%'
+          """)
+
+          tables = [row[0] for row in cursor.fetchall()]
+          print(f"\n🗂️ Available Tables: {tables}")
+
+          # Try to find Moon position data
+          if 'daily_planetary_positions' in tables:
+              print("\n🌙 Moon Position Data Sample:")
+              cursor.execute("""
+              SELECT trade_date, planet, degree, sign
+              FROM daily_planetary_positions
+              WHERE planet = 'Moon'
+              ORDER BY trade_date DESC
+              LIMIT 5
+              """)
+
+              for row in cursor.fetchall():
+                  print(f"  {row[0]}: Moon at {row[2]}° {row[3]}")
+
+          # Check aspects table for sign information
+          cursor.execute("""
+          SELECT column_name, data_type
+          FROM information_schema.columns
+          WHERE table_name = 'daily_planetary_aspects'
+          ORDER BY ordinal_position
+          """)
+
+          print(f"\n🔗 Planetary Aspects Columns:")
+          for column, dtype in cursor.fetchall():
+              print(f"  {column} ({dtype})")
+
+          cursor.close()
+          conn.close()
+          EOF
+
+          python check_signs.py
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+
+      restartPolicy: Never
+  backoffLimit: 1

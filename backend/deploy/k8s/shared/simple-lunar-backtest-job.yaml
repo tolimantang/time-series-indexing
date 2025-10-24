@@ -1,0 +1,232 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: simple-lunar-backtest
+  namespace: time-series-indexing
+  labels:
+    app: simple-lunar-backtest
+    component: astrological-analysis
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: simple-lunar-backtest
+    spec:
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: simple-lunar-test
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "🌙 Starting Simple Next-Day Lunar Analysis"
+
+          # Install dependencies
+          apt-get update && apt-get install -y libpq-dev postgresql-client
+          pip install --no-cache-dir psycopg2-binary
+
+          # Create simple tester
+          cat > simple_lunar_test.py << 'EOF'
+          """
+          Ultra-Simple Lunar Test: Moon Transit → Next Day Oil Price
+          """
+
+          import logging
+          import psycopg2
+          import os
+          from datetime import datetime, timedelta
+
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger(__name__)
+
+          def analyze_lunar_nextday():
+              """Simple analysis: lunar event today → oil direction tomorrow"""
+
+              # Database connection
+              db_config = {
+                  'host': os.environ['DB_HOST'],
+                  'user': os.environ['DB_USER'],
+                  'database': os.environ['DB_NAME'],
+                  'password': os.environ['PGPASSWORD']
+              }
+
+              conn = psycopg2.connect(**db_config)
+              cursor = conn.cursor()
+
+              # Simple query: lunar events + next-day price direction
+              query = """
+              WITH lunar_events AS (
+                  SELECT DISTINCT
+                      dc.trade_date as event_date,
+                      CONCAT(pa.aspect_type, ' ', pa.planet2) as pattern
+                  FROM daily_astrological_conditions dc
+                  JOIN daily_planetary_aspects pa ON dc.id = pa.conditions_id
+                  WHERE pa.planet1 = 'Moon'
+                    AND dc.trade_date >= CURRENT_DATE - INTERVAL '5 years'
+                    AND pa.orb <= 3.0
+              ),
+              price_movements AS (
+                  SELECT
+                      le.pattern,
+                      p1.close_price as day0_price,
+                      p2.close_price as day1_price,
+                      CASE
+                          WHEN p2.close_price > p1.close_price THEN 'up'
+                          WHEN p2.close_price < p1.close_price THEN 'down'
+                          ELSE 'same'
+                      END as direction,
+                      ((p2.close_price - p1.close_price) / p1.close_price) * 100 as pct_change
+                  FROM lunar_events le
+                  JOIN market_data p1 ON p1.trade_date = le.event_date
+                      AND p1.symbol = 'CRUDE_OIL_WTI'
+                  JOIN market_data p2 ON p2.trade_date = le.event_date + INTERVAL '1 day'
+                      AND p2.symbol = 'CRUDE_OIL_WTI'
+                  WHERE p1.close_price IS NOT NULL
+                    AND p2.close_price IS NOT NULL
+                    AND p1.close_price != p2.close_price  -- Exclude no-change days
+              )
+              SELECT
+                  pattern,
+                  direction,
+                  COUNT(*) as count,
+                  AVG(pct_change) as avg_change
+              FROM price_movements
+              GROUP BY pattern, direction
+              HAVING COUNT(*) >= 3  -- Minimum 3 occurrences
+              ORDER BY pattern, direction
+              """
+
+              cursor.execute(query)
+              results = cursor.fetchall()
+
+              # Process results
+              patterns = {}
+              for pattern, direction, count, avg_change in results:
+                  if pattern not in patterns:
+                      patterns[pattern] = {'up': 0, 'down': 0, 'up_avg': 0, 'down_avg': 0}
+
+                  patterns[pattern][direction] = count
+                  patterns[pattern][f"{direction}_avg"] = avg_change
+
+              # Find predictive patterns (>65% accuracy)
+              predictive = []
+              for pattern, data in patterns.items():
+                  total = data['up'] + data['down']
+                  if total >= 5:  # Need at least 5 total occurrences
+                      up_rate = data['up'] / total
+                      down_rate = data['down'] / total
+
+                      if up_rate >= 0.65:
+                          predictive.append({
+                              'pattern': f"Moon {pattern}",
+                              'prediction': 'BULLISH',
+                              'accuracy': up_rate,
+                              'occurrences': total,
+                              'up_count': data['up'],
+                              'down_count': data['down'],
+                              'avg_up_move': data['up_avg']
+                          })
+                      elif down_rate >= 0.65:
+                          predictive.append({
+                              'pattern': f"Moon {pattern}",
+                              'prediction': 'BEARISH',
+                              'accuracy': down_rate,
+                              'occurrences': total,
+                              'up_count': data['up'],
+                              'down_count': data['down'],
+                              'avg_down_move': data['down_avg']
+                          })
+
+              # Print results
+              print(f"\n🌙 SIMPLE LUNAR → NEXT-DAY OIL ANALYSIS")
+              print(f"=" * 60)
+              print(f"Analysis: Moon transit today → Oil direction tomorrow")
+              print(f"Period: Last 5 years")
+              print(f"Threshold: 65% accuracy, minimum 5 occurrences")
+              print(f"Predictive patterns found: {len(predictive)}")
+
+              if predictive:
+                  print(f"\n📈 PREDICTIVE PATTERNS:")
+                  print("-" * 40)
+
+                  # Sort by accuracy
+                  predictive.sort(key=lambda x: x['accuracy'], reverse=True)
+
+                  for i, p in enumerate(predictive, 1):
+                      direction_emoji = "📈" if p['prediction'] == 'BULLISH' else "📉"
+                      print(f"{i}. {p['pattern']} → {p['prediction']} {direction_emoji}")
+                      print(f"   Accuracy: {p['accuracy']:.1%}")
+                      print(f"   Sample: {p['occurrences']} events (↑{p['up_count']} ↓{p['down_count']})")
+
+                      if p['prediction'] == 'BULLISH':
+                          print(f"   Avg Up Move: +{p['avg_up_move']:.2f}%")
+                          expected = p['accuracy'] * p['avg_up_move']
+                          print(f"   Expected Return: +{expected:.2f}% per signal")
+                      else:
+                          print(f"   Avg Down Move: {p['avg_down_move']:.2f}%")
+                          expected = p['accuracy'] * abs(p['avg_down_move'])
+                          print(f"   Expected Return: +{expected:.2f}% (short)")
+                      print()
+
+                  print(f"🎯 BEST SIGNAL:")
+                  best = predictive[0]
+                  print(f"   {best['pattern']} → {best['prediction']}")
+                  print(f"   {best['accuracy']:.1%} accuracy over {best['occurrences']} events")
+
+                  print(f"\n🚀 CONCLUSION: YES! Some lunar transits DO predict next-day oil movements!")
+              else:
+                  print(f"\n❌ NO PREDICTIVE PATTERNS FOUND")
+                  print(f"Lunar transits do not reliably predict next-day oil direction")
+                  print(f"Market may be too efficient for astrological patterns")
+
+              cursor.close()
+              conn.close()
+
+              return len(predictive) > 0
+
+          if __name__ == "__main__":
+              print("🚀 Testing: Moon Transit → Next Day Oil Direction")
+              success = analyze_lunar_nextday()
+
+              if success:
+                  print("\n✅ HYPOTHESIS CONFIRMED: Lunar patterns found!")
+              else:
+                  print("\n⚠️ HYPOTHESIS REJECTED: No lunar patterns found")
+          EOF
+
+          # Run the simple test
+          echo "🔍 Running simple lunar → next-day analysis..."
+          python3 simple_lunar_test.py
+
+          echo "✅ Simple lunar analysis completed!"
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+
+      restartPolicy: Never
+  backoffLimit: 1

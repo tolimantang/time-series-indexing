@@ -33,6 +33,35 @@ class LunarAspectType(Enum):
     SQUARE = "square"
     SEXTILE = "sextile"
 
+class ZodiacSign(Enum):
+    ARIES = (0, "Aries", "Fire", "Cardinal")
+    TAURUS = (1, "Taurus", "Earth", "Fixed")
+    GEMINI = (2, "Gemini", "Air", "Mutable")
+    CANCER = (3, "Cancer", "Water", "Cardinal")
+    LEO = (4, "Leo", "Fire", "Fixed")
+    VIRGO = (5, "Virgo", "Earth", "Mutable")
+    LIBRA = (6, "Libra", "Air", "Cardinal")
+    SCORPIO = (7, "Scorpio", "Water", "Fixed")
+    SAGITTARIUS = (8, "Sagittarius", "Fire", "Mutable")
+    CAPRICORN = (9, "Capricorn", "Earth", "Cardinal")
+    AQUARIUS = (10, "Aquarius", "Air", "Fixed")
+    PISCES = (11, "Pisces", "Water", "Mutable")
+
+    def __init__(self, number, name, element, quality):
+        self.number = number
+        self.sign_name = name
+        self.element = element
+        self.quality = quality
+
+    @classmethod
+    def from_degrees(cls, degrees: float):
+        """Convert degrees (0-360) to zodiac sign"""
+        sign_number = int(degrees // 30)
+        for sign in cls:
+            if sign.number == sign_number:
+                return sign
+        return cls.ARIES  # fallback
+
 @dataclass
 class LunarEvent:
     """Represents a lunar transit event"""
@@ -42,6 +71,10 @@ class LunarEvent:
     target_position: float  # degrees
     orb: float
     moon_position: float
+    target_sign: ZodiacSign
+    moon_sign: ZodiacSign
+    target_degrees_in_sign: float  # 0-30 degrees within the sign
+    moon_degrees_in_sign: float
 
 @dataclass
 class MarketMove:
@@ -58,12 +91,15 @@ class LunarPattern:
     description: str
     aspect_type: LunarAspectType
     target_planet: str
+    target_sign: ZodiacSign
+    moon_sign: Optional[ZodiacSign]  # None for sign-agnostic patterns
     events: List[Tuple[LunarEvent, MarketMove]]
     consistency_rate: float
     avg_magnitude: float
     avg_duration: float
     last_occurrence: datetime
     total_occurrences: int
+    pattern_strength: str  # "strong", "moderate", "weak" based on planetary dignities
 
 @dataclass
 class MaterialChange:
@@ -94,6 +130,44 @@ class LunarPatternTester:
 
         # Initialize Swiss Ephemeris
         swe.set_ephe_path('/usr/share/swisseph:/usr/local/share/swisseph')
+
+        # Planetary dignities for pattern strength assessment
+        self.planetary_dignities = {
+            'Sun': {'rulership': [ZodiacSign.LEO], 'exaltation': [ZodiacSign.ARIES], 'detriment': [ZodiacSign.AQUARIUS], 'fall': [ZodiacSign.LIBRA]},
+            'Moon': {'rulership': [ZodiacSign.CANCER], 'exaltation': [ZodiacSign.TAURUS], 'detriment': [ZodiacSign.CAPRICORN], 'fall': [ZodiacSign.SCORPIO]},
+            'Mercury': {'rulership': [ZodiacSign.GEMINI, ZodiacSign.VIRGO], 'exaltation': [ZodiacSign.VIRGO], 'detriment': [ZodiacSign.SAGITTARIUS, ZodiacSign.PISCES], 'fall': [ZodiacSign.PISCES]},
+            'Venus': {'rulership': [ZodiacSign.TAURUS, ZodiacSign.LIBRA], 'exaltation': [ZodiacSign.PISCES], 'detriment': [ZodiacSign.SCORPIO, ZodiacSign.ARIES], 'fall': [ZodiacSign.VIRGO]},
+            'Mars': {'rulership': [ZodiacSign.ARIES, ZodiacSign.SCORPIO], 'exaltation': [ZodiacSign.CAPRICORN], 'detriment': [ZodiacSign.LIBRA, ZodiacSign.TAURUS], 'fall': [ZodiacSign.CANCER]},
+            'Jupiter': {'rulership': [ZodiacSign.SAGITTARIUS, ZodiacSign.PISCES], 'exaltation': [ZodiacSign.CANCER], 'detriment': [ZodiacSign.GEMINI, ZodiacSign.VIRGO], 'fall': [ZodiacSign.CAPRICORN]},
+            'Saturn': {'rulership': [ZodiacSign.CAPRICORN, ZodiacSign.AQUARIUS], 'exaltation': [ZodiacSign.LIBRA], 'detriment': [ZodiacSign.CANCER, ZodiacSign.LEO], 'fall': [ZodiacSign.ARIES]},
+            'Uranus': {'rulership': [ZodiacSign.AQUARIUS], 'exaltation': [ZodiacSign.SCORPIO], 'detriment': [ZodiacSign.LEO], 'fall': [ZodiacSign.TAURUS]},
+            'Neptune': {'rulership': [ZodiacSign.PISCES], 'exaltation': [ZodiacSign.CANCER], 'detriment': [ZodiacSign.VIRGO], 'fall': [ZodiacSign.CAPRICORN]},
+            'Pluto': {'rulership': [ZodiacSign.SCORPIO], 'exaltation': [ZodiacSign.ARIES], 'detriment': [ZodiacSign.TAURUS], 'fall': [ZodiacSign.LIBRA]}
+        }
+
+    def get_planetary_strength(self, planet: str, sign: ZodiacSign) -> str:
+        """Determine planetary strength based on sign placement"""
+        if planet not in self.planetary_dignities:
+            return "neutral"
+
+        dignities = self.planetary_dignities[planet]
+
+        if sign in dignities.get('rulership', []):
+            return "very_strong"  # Planet in its home sign
+        elif sign in dignities.get('exaltation', []):
+            return "strong"  # Planet exalted
+        elif sign in dignities.get('detriment', []):
+            return "weak"  # Planet in detriment
+        elif sign in dignities.get('fall', []):
+            return "very_weak"  # Planet in fall
+        else:
+            return "neutral"  # Planet in neutral sign
+
+    def calculate_sign_and_degrees(self, position: float) -> Tuple[ZodiacSign, float]:
+        """Calculate zodiac sign and degrees within sign from celestial longitude"""
+        sign = ZodiacSign.from_degrees(position)
+        degrees_in_sign = position % 30
+        return sign, degrees_in_sign
 
     async def connect_db(self):
         """Connect to the database"""
@@ -198,13 +272,21 @@ class LunarPatternTester:
                 orb = self.calculate_aspect_orb(moon_pos, planet_pos, aspect_deg)
 
                 if orb <= self.config['max_orb_degrees']:
+                    # Calculate signs and degrees within signs
+                    target_sign, target_degrees_in_sign = self.calculate_sign_and_degrees(planet_pos)
+                    moon_sign, moon_degrees_in_sign = self.calculate_sign_and_degrees(moon_pos)
+
                     events.append(LunarEvent(
                         date=current_date,
                         aspect_type=aspect_type,
                         target_planet=target_planet,
                         target_position=planet_pos,
                         orb=orb,
-                        moon_position=moon_pos
+                        moon_position=moon_pos,
+                        target_sign=target_sign,
+                        moon_sign=moon_sign,
+                        target_degrees_in_sign=target_degrees_in_sign,
+                        moon_degrees_in_sign=moon_degrees_in_sign
                     ))
 
             current_date += timedelta(days=1)
@@ -296,26 +378,30 @@ class LunarPatternTester:
 
     def discover_patterns(self, lunar_events: List[LunarEvent],
                          price_data: Dict[datetime, float]) -> List[LunarPattern]:
-        """Discover repeating lunar patterns"""
+        """Discover repeating lunar patterns with zodiac sign awareness"""
         patterns = {}
 
-        # Group events by aspect type and target planet
+        # Group events by aspect type, target planet, and target planet's sign
         for event in lunar_events:
-            key = (event.aspect_type, event.target_planet)
-            if key not in patterns:
-                patterns[key] = []
+            # Create both sign-specific and sign-agnostic pattern keys
+            sign_specific_key = (event.aspect_type, event.target_planet, event.target_sign)
+            sign_agnostic_key = (event.aspect_type, event.target_planet, None)
 
-            # Calculate market move for this event
-            for window in self.config['market_move_window_days']:
-                market_move = self.calculate_market_move(event.date, price_data, window)
-                if market_move and market_move.direction != MarketDirection.SIDEWAYS:
-                    patterns[key].append((event, market_move))
-                    break  # Use the first significant move found
+            for key in [sign_specific_key, sign_agnostic_key]:
+                if key not in patterns:
+                    patterns[key] = []
+
+                # Calculate market move for this event
+                for window in self.config['market_move_window_days']:
+                    market_move = self.calculate_market_move(event.date, price_data, window)
+                    if market_move and market_move.direction != MarketDirection.SIDEWAYS:
+                        patterns[key].append((event, market_move))
+                        break  # Use the first significant move found
 
         # Analyze each pattern group for consistency
         discovered_patterns = []
 
-        for (aspect_type, planet), event_moves in patterns.items():
+        for (aspect_type, planet, target_sign), event_moves in patterns.items():
             if len(event_moves) < self.config['minimum_occurrences']:
                 continue
 
@@ -329,20 +415,32 @@ class LunarPatternTester:
                 magnitudes = [abs(move.magnitude) for _, move in event_moves]
                 durations = [move.duration_days for _, move in event_moves]
 
+                # Create descriptive text
+                if target_sign:
+                    description = f"Moon {aspect_type.value} {planet} in {target_sign.sign_name} → {most_common_direction.value}"
+                    pattern_strength = self.get_planetary_strength(planet, target_sign)
+                else:
+                    description = f"Moon {aspect_type.value} {planet} → {most_common_direction.value}"
+                    pattern_strength = "neutral"
+
                 pattern = LunarPattern(
-                    description=f"Moon {aspect_type.value} {planet} → {most_common_direction.value}",
+                    description=description,
                     aspect_type=aspect_type,
                     target_planet=planet,
+                    target_sign=target_sign,
+                    moon_sign=None,  # Could be enhanced to track moon sign patterns too
                     events=event_moves,
                     consistency_rate=consistency_rate,
                     avg_magnitude=np.mean(magnitudes),
                     avg_duration=np.mean(durations),
                     last_occurrence=max(event.date for event, _ in event_moves),
-                    total_occurrences=len(event_moves)
+                    total_occurrences=len(event_moves),
+                    pattern_strength=pattern_strength
                 )
 
                 discovered_patterns.append(pattern)
-                logger.info(f"Discovered pattern: {pattern.description} "
+                strength_info = f" [{pattern_strength}]" if target_sign else ""
+                logger.info(f"Discovered pattern: {pattern.description}{strength_info} "
                            f"({consistency_rate:.1%} consistency, {len(event_moves)} occurrences)")
 
         return discovered_patterns
