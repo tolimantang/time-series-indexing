@@ -1,0 +1,607 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: enhanced-hourly-lunar-backtest
+  namespace: time-series-indexing
+  labels:
+    app: enhanced-hourly-lunar-backtest
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: enhanced-hourly-lunar-backtest
+    spec:
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: enhanced-lunar-backtest
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "🌙⏰ Enhanced Hourly Lunar Backtesting with Auto-Storage"
+
+          # Install dependencies
+          apt-get update && apt-get install -y libpq-dev
+          pip install --no-cache-dir psycopg2-binary pyswisseph
+
+          # Create enhanced hourly lunar backtesting script
+          cat > enhanced_hourly_lunar_backtest.py << 'EOF'
+          import psycopg2
+          import swisseph as swe
+          import os
+          import logging
+          from datetime import datetime, timedelta, timezone
+          from collections import defaultdict
+          from psycopg2.extras import execute_values
+
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger(__name__)
+
+          class EnhancedHourlyLunarBacktester:
+              def __init__(self):
+                  self.db_config = {
+                      'host': os.environ['DB_HOST'],
+                      'user': os.environ['DB_USER'],
+                      'database': os.environ['DB_NAME'],
+                      'password': os.environ['DB_PASSWORD'],
+                      'port': int(os.environ.get('DB_PORT', '5432'))
+                  }
+
+                  # Initialize Swiss Ephemeris
+                  swe.set_ephe_path('/usr/share/swisseph')  # Standard path
+
+                  # Define significant movement threshold (degrees)
+                  self.SIGNIFICANT_MOVEMENT_THRESHOLD = 5.0  # 5 degrees minimum
+
+              def get_lunar_position(self, julian_day):
+                  """Get moon's position at specific time"""
+                  try:
+                      result = swe.calc_ut(julian_day, swe.MOON)
+                      longitude = result[0][0]
+                      latitude = result[0][1]
+
+                      # Calculate zodiac sign (30 degrees per sign)
+                      sign_num = int(longitude // 30)
+                      signs = ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
+                              'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces']
+                      zodiac_sign = signs[sign_num]
+
+                      # Position within sign (0-30 degrees)
+                      position_in_sign = longitude % 30
+
+                      return {
+                          'longitude': longitude,
+                          'latitude': latitude,
+                          'zodiac_sign': zodiac_sign,
+                          'position_in_sign': position_in_sign
+                      }
+                  except Exception as e:
+                      logger.error(f"Error calculating lunar position: {e}")
+                      return None
+
+              def get_planetary_positions(self, julian_day):
+                  """Get positions of all major planets"""
+                  planets = {
+                      'Sun': swe.SUN,
+                      'Mercury': swe.MERCURY,
+                      'Venus': swe.VENUS,
+                      'Mars': swe.MARS,
+                      'Jupiter': swe.JUPITER,
+                      'Saturn': swe.SATURN,
+                      'Uranus': swe.URANUS,
+                      'Neptune': swe.NEPTUNE,
+                      'Pluto': swe.PLUTO
+                  }
+
+                  positions = {}
+                  for planet_name, planet_id in planets.items():
+                      try:
+                          result = swe.calc_ut(julian_day, planet_id)
+                          longitude = result[0][0]
+
+                          # Calculate zodiac sign
+                          sign_num = int(longitude // 30)
+                          signs = ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
+                                  'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces']
+
+                          positions[planet_name] = {
+                              'longitude': longitude,
+                              'zodiac_sign': signs[sign_num],
+                              'position_in_sign': longitude % 30
+                          }
+                      except Exception as e:
+                          logger.warning(f"Could not get position for {planet_name}: {e}")
+
+                  return positions
+
+              def calculate_aspects(self, moon_long, planet_positions):
+                  """Calculate lunar aspects to other planets"""
+                  aspects = []
+                  aspect_types = {
+                      'conjunction': (0, 5),      # 0° ± 5°
+                      'sextile': (60, 3),         # 60° ± 3°
+                      'square': (90, 5),          # 90° ± 5°
+                      'trine': (120, 5),          # 120° ± 5°
+                      'opposition': (180, 5)      # 180° ± 5°
+                  }
+
+                  for planet_name, planet_data in planet_positions.items():
+                      planet_long = planet_data['longitude']
+
+                      # Calculate angle difference
+                      angle_diff = abs(moon_long - planet_long)
+                      if angle_diff > 180:
+                          angle_diff = 360 - angle_diff
+
+                      # Check for aspects
+                      for aspect_name, (target_angle, orb) in aspect_types.items():
+                          if abs(angle_diff - target_angle) <= orb:
+                              aspects.append({
+                                  'aspect_type': aspect_name,
+                                  'planet': planet_name,
+                                  'orb': abs(angle_diff - target_angle),
+                                  'moon_sign': None,  # Will be filled later
+                                  'planet_sign': planet_data['zodiac_sign']
+                              })
+
+                  return aspects
+
+              def dt_to_julian(self, dt):
+                  """Convert datetime to Julian day"""
+                  year = dt.year
+                  month = dt.month
+                  day = dt.day
+                  hour = dt.hour + dt.minute/60.0 + dt.second/3600.0
+
+                  return swe.julday(year, month, day, hour)
+
+              def get_hourly_price_data(self, market_symbol):
+                  """Get hourly price data for the specified market"""
+                  logger.info(f"Fetching hourly price data for {market_symbol}...")
+
+                  conn = psycopg2.connect(**self.db_config)
+                  cursor = conn.cursor()
+
+                  # Get hourly data, focusing on market hours and weekdays
+                  cursor.execute("""
+                      SELECT datetime, close_price, open_price, high_price, low_price
+                      FROM market_data_intraday
+                      WHERE symbol = %s
+                        AND interval_type = '1h'
+                        AND EXTRACT(dow FROM datetime) BETWEEN 1 AND 5  -- Monday to Friday
+                        AND EXTRACT(hour FROM datetime) BETWEEN 9 AND 16  -- Market hours
+                      ORDER BY datetime
+                  """, (market_symbol,))
+
+                  data = cursor.fetchall()
+                  cursor.close()
+                  conn.close()
+
+                  logger.info(f"Found {len(data)} hourly records for {market_symbol}")
+                  return data
+
+              def analyze_weekend_gap_strategy(self, market_symbol):
+                  """Implement weekend gap strategy for lunar transits"""
+                  logger.info(f"Analyzing weekend gap strategy for {market_symbol}...")
+
+                  conn = psycopg2.connect(**self.db_config)
+                  cursor = conn.cursor()
+
+                  # Get Friday close to Monday open gaps with lunar context
+                  cursor.execute("""
+                      WITH friday_close AS (
+                          SELECT datetime, close_price,
+                                 ROW_NUMBER() OVER (PARTITION BY DATE(datetime) ORDER BY datetime DESC) as rn
+                          FROM market_data_intraday
+                          WHERE symbol = %s
+                            AND interval_type = '1h'
+                            AND EXTRACT(dow FROM datetime) = 5  -- Friday
+                            AND EXTRACT(hour FROM datetime) >= 15  -- Late trading hours
+                      ),
+                      monday_open AS (
+                          SELECT datetime, open_price,
+                                 ROW_NUMBER() OVER (PARTITION BY DATE(datetime) ORDER BY datetime ASC) as rn
+                          FROM market_data_intraday
+                          WHERE symbol = %s
+                            AND interval_type = '1h'
+                            AND EXTRACT(dow FROM datetime) = 1  -- Monday
+                            AND EXTRACT(hour FROM datetime) <= 11  -- Early trading hours
+                      ),
+                      weekend_gaps AS (
+                          SELECT
+                              f.datetime as friday_time,
+                              f.close_price as friday_close,
+                              m.datetime as monday_time,
+                              m.open_price as monday_open,
+                              ((m.open_price - f.close_price) / f.close_price) * 100 as gap_percent
+                          FROM friday_close f
+                          JOIN monday_open m ON DATE(m.datetime) = DATE(f.datetime) + INTERVAL '3 days'
+                          WHERE f.rn = 1 AND m.rn = 1
+                            AND ABS(((m.open_price - f.close_price) / f.close_price) * 100) > 1.0  -- Significant gaps only
+                      )
+                      SELECT * FROM weekend_gaps
+                      ORDER BY friday_time
+                  """, (market_symbol, market_symbol))
+
+                  weekend_data = cursor.fetchall()
+                  cursor.close()
+                  conn.close()
+
+                  logger.info(f"Found {len(weekend_data)} significant weekend gaps for {market_symbol}")
+
+                  # Analyze lunar movements during weekend gaps
+                  weekend_patterns = []
+                  for friday_time, friday_close, monday_time, monday_open, gap_percent in weekend_data:
+                      # Calculate lunar movement from Friday to Monday
+                      friday_jd = self.dt_to_julian(friday_time)
+                      monday_jd = self.dt_to_julian(monday_time)
+
+                      friday_moon = self.get_lunar_position(friday_jd)
+                      monday_moon = self.get_lunar_position(monday_jd)
+
+                      if friday_moon and monday_moon:
+                          # Calculate lunar movement in degrees
+                          lunar_movement = abs(monday_moon['longitude'] - friday_moon['longitude'])
+                          if lunar_movement > 180:
+                              lunar_movement = 360 - lunar_movement
+
+                          # Check if moon changed signs
+                          sign_change = friday_moon['zodiac_sign'] != monday_moon['zodiac_sign']
+
+                          # Only include if significant lunar movement occurred
+                          if lunar_movement >= self.SIGNIFICANT_MOVEMENT_THRESHOLD:
+                              weekend_patterns.append({
+                                  'friday_time': friday_time,
+                                  'monday_time': monday_time,
+                                  'gap_percent': gap_percent,
+                                  'lunar_movement': lunar_movement,
+                                  'friday_moon_sign': friday_moon['zodiac_sign'],
+                                  'monday_moon_sign': monday_moon['zodiac_sign'],
+                                  'sign_change': sign_change,
+                                  'direction': 'up' if gap_percent > 0 else 'down'
+                              })
+
+                  return weekend_patterns
+
+              def run_enhanced_hourly_analysis(self, market_symbol, display_name):
+                  """Run comprehensive hourly lunar analysis with auto-storage"""
+                  logger.info(f"🚀 Starting enhanced hourly lunar analysis for {market_symbol}...")
+
+                  # Get hourly price data
+                  hourly_data = self.get_hourly_price_data(market_symbol)
+
+                  if not hourly_data:
+                      logger.error(f"No hourly data found for {market_symbol}")
+                      return []
+
+                  logger.info(f"Analyzing {len(hourly_data)} hourly price points...")
+
+                  # Track patterns
+                  patterns = defaultdict(lambda: {
+                      'up': 0, 'down': 0, 'up_avg': 0, 'down_avg': 0,
+                      'total_change': 0, 'total_count': 0,
+                      'aspect_type': None, 'moon_sign': None, 'target_planet': None, 'target_sign': None,
+                      'first_date': None, 'last_date': None
+                  })
+
+                  # Process each hourly data point
+                  for i in range(len(hourly_data) - 1):
+                      current_time, current_price, current_open, current_high, current_low = hourly_data[i]
+                      next_time, next_price, next_open, next_high, next_low = hourly_data[i + 1]
+
+                      # Calculate price change
+                      price_change = ((next_price - current_price) / current_price) * 100
+
+                      # Skip tiny movements
+                      if abs(price_change) < 0.1:
+                          continue
+
+                      # Get lunar position and aspects at current time
+                      julian_day = self.dt_to_julian(current_time.replace(tzinfo=timezone.utc))
+                      moon_pos = self.get_lunar_position(julian_day)
+
+                      if not moon_pos:
+                          continue
+
+                      # Get planetary positions
+                      planet_positions = self.get_planetary_positions(julian_day)
+
+                      # Calculate aspects
+                      aspects = self.calculate_aspects(moon_pos['longitude'], planet_positions)
+
+                      # Store moon sign for aspects
+                      for aspect in aspects:
+                          aspect['moon_sign'] = moon_pos['zodiac_sign']
+
+                      # Track price movements for each pattern type
+                      direction = 'up' if price_change > 0 else 'down'
+
+                      # 1. Moon sign patterns
+                      moon_sign_pattern = f"Moon in {moon_pos['zodiac_sign']}"
+                      self.update_pattern(patterns[moon_sign_pattern], direction, price_change, current_time,
+                                        aspect_type='sign_transit', moon_sign=moon_pos['zodiac_sign'])
+
+                      # 2. Aspect patterns
+                      for aspect in aspects:
+                          # Basic aspect pattern
+                          basic_pattern = f"Moon {aspect['aspect_type']} {aspect['planet']}"
+                          self.update_pattern(patterns[basic_pattern], direction, price_change, current_time,
+                                            aspect_type=aspect['aspect_type'], target_planet=aspect['planet'])
+
+                          # Sign-specific aspect pattern
+                          sign_pattern = f"Moon in {aspect['moon_sign']} {aspect['aspect_type']} {aspect['planet']} in {aspect['planet_sign']}"
+                          self.update_pattern(patterns[sign_pattern], direction, price_change, current_time,
+                                            aspect_type=aspect['aspect_type'], moon_sign=aspect['moon_sign'],
+                                            target_planet=aspect['planet'], target_sign=aspect['planet_sign'])
+
+                  # Analyze weekend gap patterns
+                  weekend_patterns = self.analyze_weekend_gap_strategy(market_symbol)
+
+                  # Process weekend patterns
+                  for weekend_data in weekend_patterns:
+                      if weekend_data['sign_change']:
+                          pattern_name = f"Moon weekend transit {weekend_data['friday_moon_sign']} to {weekend_data['monday_moon_sign']}"
+                          self.update_pattern(patterns[pattern_name], weekend_data['direction'],
+                                            weekend_data['gap_percent'], weekend_data['friday_time'],
+                                            aspect_type='weekend_transit',
+                                            moon_sign=weekend_data['friday_moon_sign'],
+                                            target_sign=weekend_data['monday_moon_sign'])
+
+                  # Find predictive patterns (≥65% accuracy)
+                  predictive_patterns = []
+                  for pattern_name, data in patterns.items():
+                      total = data['up'] + data['down']
+                      if total >= 3:  # Minimum 3 occurrences
+                          up_rate = data['up'] / total
+                          down_rate = data['down'] / total
+
+                          if up_rate >= 0.65:
+                              predictive_patterns.append({
+                                  'pattern_name': pattern_name,
+                                  'pattern_type': self.classify_pattern_type(pattern_name),
+                                  'prediction': 'BULLISH',
+                                  'accuracy_rate': up_rate,
+                                  'total_occurrences': total,
+                                  'up_count': data['up'],
+                                  'down_count': data['down'],
+                                  'avg_up_move': float(data['up_avg']),
+                                  'avg_down_move': float(data['down_avg']),
+                                  'expected_return': up_rate * float(data['up_avg']),
+                                  'aspect_type': data['aspect_type'],
+                                  'moon_sign': data['moon_sign'],
+                                  'target_planet': data['target_planet'],
+                                  'target_sign': data['target_sign'],
+                                  'first_date': data['first_date'],
+                                  'last_date': data['last_date'],
+                                  'market_symbol': market_symbol
+                              })
+                          elif down_rate >= 0.65:
+                              predictive_patterns.append({
+                                  'pattern_name': pattern_name,
+                                  'pattern_type': self.classify_pattern_type(pattern_name),
+                                  'prediction': 'BEARISH',
+                                  'accuracy_rate': down_rate,
+                                  'total_occurrences': total,
+                                  'up_count': data['up'],
+                                  'down_count': data['down'],
+                                  'avg_up_move': float(data['up_avg']),
+                                  'avg_down_move': float(data['down_avg']),
+                                  'expected_return': down_rate * abs(float(data['down_avg'])),
+                                  'aspect_type': data['aspect_type'],
+                                  'moon_sign': data['moon_sign'],
+                                  'target_planet': data['target_planet'],
+                                  'target_sign': data['target_sign'],
+                                  'first_date': data['first_date'],
+                                  'last_date': data['last_date'],
+                                  'market_symbol': market_symbol
+                              })
+
+                  # Sort and rank patterns
+                  predictive_patterns.sort(key=lambda x: x['accuracy_rate'], reverse=True)
+                  for i, pattern in enumerate(predictive_patterns, 1):
+                      pattern['accuracy_rank'] = i
+
+                  predictive_patterns.sort(key=lambda x: x['expected_return'], reverse=True)
+                  for i, pattern in enumerate(predictive_patterns, 1):
+                      pattern['return_rank'] = i
+
+                  # Display results
+                  self.display_results(predictive_patterns, display_name, len(weekend_patterns))
+
+                  # Auto-store to lunar_patterns table
+                  stored_count = self.store_patterns_to_db(predictive_patterns, market_symbol)
+
+                  logger.info(f"✅ Enhanced hourly analysis complete: {len(predictive_patterns)} patterns found, {stored_count} stored")
+
+                  return predictive_patterns
+
+              def update_pattern(self, pattern_data, direction, price_change, timestamp, **metadata):
+                  """Update pattern tracking data"""
+                  pattern_data[direction] += 1
+                  pattern_data['total_count'] += 1
+                  pattern_data['total_change'] += price_change
+
+                  # Update averages
+                  if pattern_data[direction] == 1:
+                      pattern_data[f'{direction}_avg'] = price_change
+                  else:
+                      old_avg = pattern_data[f'{direction}_avg']
+                      count = pattern_data[direction]
+                      pattern_data[f'{direction}_avg'] = (old_avg * (count - 1) + price_change) / count
+
+                  # Update metadata
+                  for key, value in metadata.items():
+                      if value:
+                          pattern_data[key] = value
+
+                  # Update date range
+                  if not pattern_data['first_date'] or timestamp < pattern_data['first_date']:
+                      pattern_data['first_date'] = timestamp
+                  if not pattern_data['last_date'] or timestamp > pattern_data['last_date']:
+                      pattern_data['last_date'] = timestamp
+
+              def classify_pattern_type(self, pattern_name):
+                  """Classify pattern type based on name"""
+                  if 'weekend' in pattern_name.lower():
+                      return 'weekend-gap'
+                  elif ' in ' in pattern_name:
+                      return 'sign-specific'
+                  elif any(aspect in pattern_name.lower() for aspect in ['conjunction', 'sextile', 'square', 'trine', 'opposition']):
+                      return 'aspect'
+                  else:
+                      return 'sign-transit'
+
+              def display_results(self, patterns, display_name, weekend_count):
+                  """Display analysis results"""
+                  print(f"\\n🌙⏰ {display_name.upper()} ENHANCED HOURLY LUNAR PATTERNS:")
+                  print("=" * 70)
+                  print(f"Found {len(patterns)} patterns with ≥65% accuracy")
+                  print(f"Weekend gap patterns analyzed: {weekend_count}")
+
+                  if patterns:
+                      # Categorize patterns
+                      by_type = defaultdict(list)
+                      for p in patterns:
+                          by_type[p['pattern_type']].append(p)
+
+                      for pattern_type, type_patterns in by_type.items():
+                          print(f"\\n📊 {pattern_type.upper()} patterns: {len(type_patterns)}")
+
+                          # Show top 3 of each type
+                          top_patterns = sorted(type_patterns, key=lambda x: x['accuracy_rate'], reverse=True)[:3]
+                          for i, p in enumerate(top_patterns, 1):
+                              emoji = "📈" if p['prediction'] == 'BULLISH' else "📉"
+                              print(f"  {i}. {p['pattern_name']} → {p['prediction']} {emoji}")
+                              print(f"     {p['accuracy_rate']:.1%} accuracy | {p['expected_return']:.2f}% return | {p['total_occurrences']} events")
+
+              def store_patterns_to_db(self, patterns, market_symbol):
+                  """Store patterns to the unified lunar_patterns table"""
+                  if not patterns:
+                      logger.info(f"No patterns to store for {market_symbol}")
+                      return 0
+
+                  conn = psycopg2.connect(**self.db_config)
+                  cursor = conn.cursor()
+
+                  # Clear existing patterns for this market
+                  cursor.execute("DELETE FROM lunar_patterns WHERE market_symbol = %s", (market_symbol,))
+                  logger.info(f"Cleared existing patterns for {market_symbol}")
+
+                  # Insert new patterns
+                  insert_sql = """
+                  INSERT INTO lunar_patterns (
+                      pattern_name, pattern_type, prediction, accuracy_rate, total_occurrences,
+                      up_count, down_count, avg_up_move, avg_down_move, expected_return,
+                      aspect_type, moon_sign, target_planet, target_sign,
+                      analysis_period_start, analysis_period_end, accuracy_rank, return_rank,
+                      market_symbol
+                  ) VALUES %s
+                  """
+
+                  records = []
+                  for pattern in patterns:
+                      record = (
+                          pattern['pattern_name'],
+                          pattern['pattern_type'],
+                          pattern['prediction'],
+                          pattern['accuracy_rate'],
+                          pattern['total_occurrences'],
+                          pattern['up_count'],
+                          pattern['down_count'],
+                          pattern['avg_up_move'],
+                          pattern['avg_down_move'],
+                          pattern['expected_return'],
+                          pattern['aspect_type'],
+                          pattern['moon_sign'],
+                          pattern['target_planet'],
+                          pattern['target_sign'],
+                          pattern['first_date'],
+                          pattern['last_date'],
+                          pattern['accuracy_rank'],
+                          pattern['return_rank'],
+                          pattern['market_symbol']
+                      )
+                      records.append(record)
+
+                  execute_values(cursor, insert_sql, records)
+                  conn.commit()
+
+                  logger.info(f"✅ Stored {len(records)} patterns for {market_symbol} to lunar_patterns table")
+
+                  cursor.close()
+                  conn.close()
+                  return len(records)
+
+              def run_complete_analysis(self):
+                  """Run analysis for all available markets"""
+                  logger.info("🚀 Starting Enhanced Hourly Lunar Analysis with Auto-Storage...")
+
+                  markets = [
+                      ('PLATINUM_FUTURES', 'Platinum'),
+                      ('CRUDE_OIL_WTI', 'Oil')  # Include oil for comparison
+                  ]
+
+                  total_patterns = 0
+                  total_stored = 0
+
+                  for market_symbol, display_name in markets:
+                      logger.info(f"\\n🎯 Analyzing {display_name}...")
+
+                      patterns = self.run_enhanced_hourly_analysis(market_symbol, display_name)
+                      total_patterns += len(patterns)
+                      total_stored += len(patterns)  # All patterns are auto-stored
+
+                  print(f"\\n🎉 ENHANCED HOURLY ANALYSIS COMPLETE:")
+                  print(f"Total patterns found: {total_patterns}")
+                  print(f"Total patterns stored: {total_stored}")
+                  print(f"Markets analyzed: {len(markets)}")
+                  print(f"\\n✨ All results automatically stored in lunar_patterns table!")
+
+          if __name__ == "__main__":
+              backtest = EnhancedHourlyLunarBacktester()
+              backtest.run_complete_analysis()
+          EOF
+
+          # Run the enhanced hourly lunar backtesting
+          python enhanced_hourly_lunar_backtest.py
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1500m"
+
+      restartPolicy: Never
+  backoffLimit: 2
