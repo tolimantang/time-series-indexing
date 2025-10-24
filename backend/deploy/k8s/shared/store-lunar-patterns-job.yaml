@@ -1,0 +1,374 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: store-lunar-patterns
+  namespace: time-series-indexing
+  labels:
+    app: store-lunar-patterns
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: store-lunar-patterns
+    spec:
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: store-patterns
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "📊 Storing Lunar Pattern Insights to PostgreSQL"
+
+          # Install dependencies
+          apt-get update && apt-get install -y libpq-dev
+          pip install --no-cache-dir psycopg2-binary
+
+          # Create comprehensive lunar pattern storage script
+          cat > store_lunar_patterns.py << 'EOF'
+          import psycopg2
+          import os
+          from datetime import datetime
+          from collections import defaultdict
+
+          def create_lunar_patterns_table(cursor):
+              """Create the lunar_patterns table to store all insights"""
+
+              # Drop table if exists
+              cursor.execute("DROP TABLE IF EXISTS lunar_patterns CASCADE")
+
+              # Create comprehensive table
+              create_table_sql = """
+              CREATE TABLE lunar_patterns (
+                  id SERIAL PRIMARY KEY,
+                  pattern_name VARCHAR(200) NOT NULL,
+                  pattern_type VARCHAR(50) NOT NULL, -- 'basic' or 'sign-specific'
+                  prediction VARCHAR(20) NOT NULL, -- 'BULLISH' or 'BEARISH'
+                  accuracy_rate DECIMAL(5,3) NOT NULL, -- e.g., 0.833 for 83.3%
+                  total_occurrences INTEGER NOT NULL,
+                  up_count INTEGER NOT NULL,
+                  down_count INTEGER NOT NULL,
+                  avg_up_move DECIMAL(8,4), -- Average percentage move when bullish
+                  avg_down_move DECIMAL(8,4), -- Average percentage move when bearish
+                  expected_return DECIMAL(8,4) NOT NULL, -- Expected return per signal
+
+                  -- Astrological details
+                  aspect_type VARCHAR(50), -- conjunction, opposition, trine, etc.
+                  moon_sign VARCHAR(20), -- Zodiac sign of Moon
+                  target_planet VARCHAR(20), -- Sun, Venus, Pluto, etc.
+                  target_sign VARCHAR(20), -- Zodiac sign of target planet
+
+                  -- Analysis metadata
+                  market_symbol VARCHAR(20) DEFAULT 'CRUDE_OIL_WTI',
+                  analysis_period_start DATE,
+                  analysis_period_end DATE,
+                  minimum_orb DECIMAL(4,2) DEFAULT 3.0,
+
+                  -- Rankings
+                  accuracy_rank INTEGER,
+                  return_rank INTEGER,
+
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+
+                  UNIQUE(pattern_name, market_symbol)
+              )
+              """
+
+              cursor.execute(create_table_sql)
+
+              # Create indexes
+              cursor.execute("CREATE INDEX idx_lunar_patterns_accuracy ON lunar_patterns(accuracy_rate DESC)")
+              cursor.execute("CREATE INDEX idx_lunar_patterns_return ON lunar_patterns(expected_return DESC)")
+              cursor.execute("CREATE INDEX idx_lunar_patterns_type ON lunar_patterns(pattern_type)")
+              cursor.execute("CREATE INDEX idx_lunar_patterns_prediction ON lunar_patterns(prediction)")
+              cursor.execute("CREATE INDEX idx_lunar_patterns_moon_sign ON lunar_patterns(moon_sign)")
+
+              print("✅ Created lunar_patterns table with indexes")
+
+          def get_and_store_patterns():
+              """Get all patterns and store them in the database"""
+
+              db_config = {
+                  'host': os.environ['DB_HOST'],
+                  'user': os.environ['DB_USER'],
+                  'database': os.environ['DB_NAME'],
+                  'password': os.environ['PGPASSWORD']
+              }
+
+              conn = psycopg2.connect(**db_config)
+              cursor = conn.cursor()
+
+              # Create the table
+              create_lunar_patterns_table(cursor)
+
+              # Enhanced query to get all pattern data
+              query = """
+              WITH lunar_events_with_signs AS (
+                  SELECT DISTINCT
+                      dc.trade_date as event_date,
+                      pa.aspect_type,
+                      pa.planet2 as target_planet,
+                      pa.orb,
+                      moon_pos.zodiac_sign as moon_sign,
+                      target_pos.zodiac_sign as target_sign
+                  FROM daily_astrological_conditions dc
+                  JOIN daily_planetary_aspects pa ON dc.id = pa.conditions_id
+                  JOIN daily_planetary_positions moon_pos ON dc.id = moon_pos.conditions_id
+                      AND moon_pos.planet = 'Moon'
+                  LEFT JOIN daily_planetary_positions target_pos ON dc.id = target_pos.conditions_id
+                      AND target_pos.planet = pa.planet2
+                  WHERE pa.planet1 = 'Moon'
+                    AND dc.trade_date >= CURRENT_DATE - INTERVAL '5 years'
+                    AND pa.orb <= 3.0
+              ),
+              price_movements AS (
+                  SELECT
+                      le.aspect_type,
+                      le.target_planet,
+                      le.moon_sign,
+                      le.target_sign,
+                      le.event_date,
+                      CASE
+                          WHEN p2.close_price > p1.close_price THEN 'up'
+                          WHEN p2.close_price < p1.close_price THEN 'down'
+                          ELSE 'same'
+                      END as direction,
+                      ((p2.close_price - p1.close_price) / p1.close_price) * 100 as pct_change
+                  FROM lunar_events_with_signs le
+                  JOIN market_data p1 ON p1.trade_date = le.event_date
+                      AND p1.symbol = 'CRUDE_OIL_WTI'
+                  JOIN market_data p2 ON p2.trade_date = le.event_date + INTERVAL '1 day'
+                      AND p2.symbol = 'CRUDE_OIL_WTI'
+                  WHERE p1.close_price IS NOT NULL
+                    AND p2.close_price IS NOT NULL
+                    AND p1.close_price != p2.close_price
+              )
+              SELECT
+                  aspect_type,
+                  target_planet,
+                  moon_sign,
+                  target_sign,
+                  direction,
+                  COUNT(*) as count,
+                  AVG(pct_change) as avg_change,
+                  MIN(event_date) as first_date,
+                  MAX(event_date) as last_date
+              FROM price_movements
+              GROUP BY aspect_type, target_planet, moon_sign, target_sign, direction
+              HAVING COUNT(*) >= 2
+              ORDER BY COUNT(*) DESC
+              """
+
+              cursor.execute(query)
+              results = cursor.fetchall()
+
+              # Process results into patterns
+              patterns = defaultdict(lambda: {
+                  'up': 0, 'down': 0, 'up_avg': 0, 'down_avg': 0,
+                  'aspect_type': None, 'moon_sign': None, 'target_planet': None, 'target_sign': None,
+                  'first_date': None, 'last_date': None
+              })
+
+              for aspect, planet, moon_sign, target_sign, direction, count, avg_change, first_date, last_date in results:
+                  # Create different pattern keys
+                  basic_key = f"Moon {aspect} {planet}"
+                  moon_sign_key = f"Moon in {moon_sign} {aspect} {planet}"
+                  if target_sign:
+                      full_sign_key = f"Moon in {moon_sign} {aspect} {planet} in {target_sign}"
+                  else:
+                      full_sign_key = moon_sign_key
+
+                  # Store data for all pattern types
+                  for key in [basic_key, moon_sign_key, full_sign_key]:
+                      patterns[key][direction] += count
+                      avg_change_float = float(avg_change)
+                      patterns[key][f"{direction}_avg"] = (patterns[key][f"{direction}_avg"] * (patterns[key][direction] - count) + avg_change_float * count) / patterns[key][direction]
+
+                      # Store metadata
+                      patterns[key]['aspect_type'] = aspect
+                      patterns[key]['target_planet'] = planet
+                      patterns[key]['moon_sign'] = moon_sign if ' in ' in key else None
+                      patterns[key]['target_sign'] = target_sign if target_sign and 'in {target_sign}' in key else None
+                      patterns[key]['first_date'] = min(patterns[key]['first_date'], first_date) if patterns[key]['first_date'] else first_date
+                      patterns[key]['last_date'] = max(patterns[key]['last_date'], last_date) if patterns[key]['last_date'] else last_date
+
+              # Find predictive patterns and store them
+              predictive = []
+              for pattern_name, data in patterns.items():
+                  total = data['up'] + data['down']
+                  if total >= 3:  # Need at least 3 total occurrences
+                      up_rate = data['up'] / total
+                      down_rate = data['down'] / total
+
+                      if up_rate >= 0.65:
+                          predictive.append({
+                              'pattern_name': pattern_name,
+                              'pattern_type': 'sign-specific' if ' in ' in pattern_name else 'basic',
+                              'prediction': 'BULLISH',
+                              'accuracy_rate': up_rate,
+                              'total_occurrences': total,
+                              'up_count': data['up'],
+                              'down_count': data['down'],
+                              'avg_up_move': float(data['up_avg']),
+                              'avg_down_move': float(data['down_avg']),
+                              'expected_return': up_rate * float(data['up_avg']),
+                              'aspect_type': data['aspect_type'],
+                              'moon_sign': data['moon_sign'],
+                              'target_planet': data['target_planet'],
+                              'target_sign': data['target_sign'],
+                              'first_date': data['first_date'],
+                              'last_date': data['last_date']
+                          })
+                      elif down_rate >= 0.65:
+                          predictive.append({
+                              'pattern_name': pattern_name,
+                              'pattern_type': 'sign-specific' if ' in ' in pattern_name else 'basic',
+                              'prediction': 'BEARISH',
+                              'accuracy_rate': down_rate,
+                              'total_occurrences': total,
+                              'up_count': data['up'],
+                              'down_count': data['down'],
+                              'avg_up_move': float(data['up_avg']),
+                              'avg_down_move': float(data['down_avg']),
+                              'expected_return': down_rate * abs(float(data['down_avg'])),
+                              'aspect_type': data['aspect_type'],
+                              'moon_sign': data['moon_sign'],
+                              'target_planet': data['target_planet'],
+                              'target_sign': data['target_sign'],
+                              'first_date': data['first_date'],
+                              'last_date': data['last_date']
+                          })
+
+              # Sort by accuracy and assign ranks
+              predictive.sort(key=lambda x: x['accuracy_rate'], reverse=True)
+              for i, pattern in enumerate(predictive, 1):
+                  pattern['accuracy_rank'] = i
+
+              # Sort by expected return and assign ranks
+              predictive.sort(key=lambda x: x['expected_return'], reverse=True)
+              for i, pattern in enumerate(predictive, 1):
+                  pattern['return_rank'] = i
+
+              # Insert patterns into database
+              insert_sql = """
+              INSERT INTO lunar_patterns (
+                  pattern_name, pattern_type, prediction, accuracy_rate, total_occurrences,
+                  up_count, down_count, avg_up_move, avg_down_move, expected_return,
+                  aspect_type, moon_sign, target_planet, target_sign,
+                  analysis_period_start, analysis_period_end, accuracy_rank, return_rank
+              ) VALUES (
+                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+              )
+              """
+
+              patterns_inserted = 0
+              for pattern in predictive:
+                  cursor.execute(insert_sql, (
+                      pattern['pattern_name'],
+                      pattern['pattern_type'],
+                      pattern['prediction'],
+                      pattern['accuracy_rate'],
+                      pattern['total_occurrences'],
+                      pattern['up_count'],
+                      pattern['down_count'],
+                      pattern['avg_up_move'],
+                      pattern['avg_down_move'],
+                      pattern['expected_return'],
+                      pattern['aspect_type'],
+                      pattern['moon_sign'],
+                      pattern['target_planet'],
+                      pattern['target_sign'],
+                      pattern['first_date'],
+                      pattern['last_date'],
+                      pattern['accuracy_rank'],
+                      pattern['return_rank']
+                  ))
+                  patterns_inserted += 1
+
+              conn.commit()
+
+              print(f"\\n📊 LUNAR PATTERNS STORED TO DATABASE:")
+              print("=" * 50)
+              print(f"✅ Inserted {patterns_inserted} patterns into lunar_patterns table")
+
+              # Show summary statistics
+              cursor.execute("""
+              SELECT
+                  pattern_type,
+                  COUNT(*) as count,
+                  AVG(accuracy_rate) as avg_accuracy,
+                  MAX(accuracy_rate) as max_accuracy,
+                  AVG(expected_return) as avg_return,
+                  MAX(expected_return) as max_return
+              FROM lunar_patterns
+              GROUP BY pattern_type
+              """)
+
+              print(f"\\n📈 STORED PATTERN SUMMARY:")
+              for row in cursor.fetchall():
+                  pattern_type, count, avg_acc, max_acc, avg_ret, max_ret = row
+                  print(f"{pattern_type.upper()}: {count} patterns")
+                  print(f"  Avg Accuracy: {float(avg_acc):.1%} | Max: {float(max_acc):.1%}")
+                  print(f"  Avg Return: {float(avg_ret):.2f}% | Max: {float(max_ret):.2f}%")
+                  print()
+
+              # Show top patterns
+              cursor.execute("""
+              SELECT pattern_name, prediction, accuracy_rate, expected_return, total_occurrences
+              FROM lunar_patterns
+              ORDER BY accuracy_rate DESC
+              LIMIT 5
+              """)
+
+              print(f"🏆 TOP 5 MOST ACCURATE PATTERNS:")
+              for i, row in enumerate(cursor.fetchall(), 1):
+                  name, pred, acc, ret, occ = row
+                  emoji = "📈" if pred == 'BULLISH' else "📉"
+                  print(f"{i}. {name} → {pred} {emoji}")
+                  print(f"   {float(acc):.1%} accuracy | {float(ret):.2f}% return | {occ} events")
+
+              cursor.close()
+              conn.close()
+
+              return patterns_inserted
+
+          if __name__ == "__main__":
+              print("🚀 Starting Lunar Pattern Storage Process...")
+              count = get_and_store_patterns()
+              print(f"\\n✅ SUCCESS: Stored {count} lunar patterns to PostgreSQL!")
+              print("You can now query the 'lunar_patterns' table for all insights.")
+          EOF
+
+          # Run the storage script
+          python store_lunar_patterns.py
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+
+      restartPolicy: Never
+  backoffLimit: 1

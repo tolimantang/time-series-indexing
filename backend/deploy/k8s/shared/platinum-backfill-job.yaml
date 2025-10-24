@@ -1,0 +1,321 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: platinum-backfill
+  namespace: time-series-indexing
+  labels:
+    app: platinum-backfill
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: platinum-backfill
+    spec:
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: platinum-backfill
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "💎 Starting Platinum Futures Data Backfill"
+
+          # Install dependencies
+          apt-get update && apt-get install -y libpq-dev curl
+          pip install --no-cache-dir psycopg2-binary requests pandas yfinance
+
+          # Create comprehensive platinum data backfill script
+          cat > platinum_backfill.py << 'EOF'
+          import psycopg2
+          import yfinance as yf
+          import requests
+          import pandas as pd
+          import os
+          import logging
+          from datetime import datetime, timedelta
+          from psycopg2.extras import execute_values
+
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger(__name__)
+
+          class PlatinumDataManager:
+              def __init__(self):
+                  self.db_config = {
+                      'host': os.environ['DB_HOST'],
+                      'user': os.environ['DB_USER'],
+                      'database': os.environ['DB_NAME'],
+                      'password': os.environ['DB_PASSWORD'],
+                      'port': int(os.environ.get('DB_PORT', '5432'))
+                  }
+
+              def get_platinum_data_yfinance(self, years_back=5):
+                  """Get platinum futures data from Yahoo Finance using yfinance"""
+                  logger.info(f"Fetching {years_back} years of platinum data from Yahoo Finance...")
+
+                  # Platinum futures symbols to try
+                  symbols = ['PL=F', 'PLV24.CMX', 'PPLT']  # Multiple platinum symbols
+
+                  end_date = datetime.now()
+                  start_date = end_date - timedelta(days=years_back * 365 + 30)  # Extra buffer
+
+                  best_data = pd.DataFrame()
+                  best_symbol = None
+
+                  for symbol in symbols:
+                      try:
+                          logger.info(f"Trying symbol: {symbol}")
+                          ticker = yf.Ticker(symbol)
+                          data = ticker.history(start=start_date, end=end_date, interval='1d')
+
+                          if not data.empty and len(data) > len(best_data):
+                              best_data = data.copy()
+                              best_symbol = symbol
+                              logger.info(f"Found {len(data)} records for {symbol}")
+
+                      except Exception as e:
+                          logger.warning(f"Failed to fetch {symbol}: {e}")
+                          continue
+
+                  if not best_data.empty:
+                      logger.info(f"Best platinum data from {best_symbol}: {len(best_data)} records")
+
+                      # Clean and standardize the data
+                      best_data = best_data.reset_index()
+                      best_data['symbol'] = 'PLATINUM_FUTURES'
+                      best_data = best_data.rename(columns={
+                          'Date': 'trade_date',
+                          'Open': 'open_price',
+                          'High': 'high_price',
+                          'Low': 'low_price',
+                          'Close': 'close_price',
+                          'Adj Close': 'adjusted_close',
+                          'Volume': 'volume'
+                      })
+
+                      # Calculate daily returns
+                      best_data['daily_return'] = best_data['close_price'].pct_change()
+
+                      # Remove any rows with NaN close prices
+                      best_data = best_data.dropna(subset=['close_price'])
+
+                      logger.info(f"Processed platinum data: {len(best_data)} records")
+                      logger.info(f"Date range: {best_data['trade_date'].min()} to {best_data['trade_date'].max()}")
+                      logger.info(f"Price range: ${best_data['close_price'].min():.2f} - ${best_data['close_price'].max():.2f}")
+
+                      return best_data
+
+                  logger.error("No platinum data could be fetched from any symbol")
+                  return pd.DataFrame()
+
+              def get_platinum_data_alternative(self, years_back=5):
+                  """Alternative method using direct Yahoo Finance API"""
+                  logger.info("Trying alternative platinum data source...")
+
+                  try:
+                      # Use direct Yahoo Finance chart API
+                      symbol = 'PL=F'  # Primary platinum futures symbol
+                      end_timestamp = int(datetime.now().timestamp())
+                      start_timestamp = int((datetime.now() - timedelta(days=years_back * 365)).timestamp())
+
+                      url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+                      params = {
+                          'period1': start_timestamp,
+                          'period2': end_timestamp,
+                          'interval': '1d',
+                          'includePrePost': 'false'
+                      }
+
+                      headers = {
+                          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                      }
+
+                      response = requests.get(url, params=params, headers=headers, timeout=30)
+                      response.raise_for_status()
+                      data = response.json()
+
+                      if 'chart' in data and data['chart']['result']:
+                          result = data['chart']['result'][0]
+                          timestamps = result['timestamp']
+                          quotes = result['indicators']['quote'][0]
+
+                          # Build DataFrame
+                          df = pd.DataFrame({
+                              'trade_date': [datetime.fromtimestamp(ts).date() for ts in timestamps],
+                              'open_price': quotes['open'],
+                              'high_price': quotes['high'],
+                              'low_price': quotes['low'],
+                              'close_price': quotes['close'],
+                              'volume': quotes['volume'],
+                              'symbol': 'PLATINUM_FUTURES'
+                          })
+
+                          # Add adjusted close (same as close for futures)
+                          df['adjusted_close'] = df['close_price']
+
+                          # Calculate daily returns
+                          df['daily_return'] = df['close_price'].pct_change()
+
+                          # Clean data
+                          df = df.dropna(subset=['close_price'])
+
+                          logger.info(f"Alternative method fetched {len(df)} platinum records")
+                          return df
+
+                  except Exception as e:
+                      logger.error(f"Alternative method failed: {e}")
+
+                  return pd.DataFrame()
+
+              def store_platinum_data(self, data):
+                  """Store platinum data in PostgreSQL market_data table"""
+                  if data.empty:
+                      logger.error("No platinum data to store")
+                      return False
+
+                  logger.info(f"Storing {len(data)} platinum records to PostgreSQL...")
+
+                  try:
+                      conn = psycopg2.connect(**self.db_config)
+                      cursor = conn.cursor()
+
+                      # Prepare records for insertion
+                      records = []
+                      for _, row in data.iterrows():
+                          record = (
+                              row['symbol'],
+                              row['trade_date'],
+                              float(row['open_price']) if pd.notna(row['open_price']) else None,
+                              float(row['high_price']) if pd.notna(row['high_price']) else None,
+                              float(row['low_price']) if pd.notna(row['low_price']) else None,
+                              float(row['close_price']),
+                              float(row['adjusted_close']) if pd.notna(row['adjusted_close']) else float(row['close_price']),
+                              int(row['volume']) if pd.notna(row['volume']) else 0,
+                              float(row['daily_return']) if pd.notna(row['daily_return']) else None
+                          )
+                          records.append(record)
+
+                      # Insert with conflict resolution
+                      insert_query = """
+                          INSERT INTO market_data (
+                              symbol, trade_date, open_price, high_price, low_price,
+                              close_price, adjusted_close, volume, daily_return
+                          ) VALUES %s
+                          ON CONFLICT (symbol, trade_date)
+                          DO UPDATE SET
+                              open_price = EXCLUDED.open_price,
+                              high_price = EXCLUDED.high_price,
+                              low_price = EXCLUDED.low_price,
+                              close_price = EXCLUDED.close_price,
+                              adjusted_close = EXCLUDED.adjusted_close,
+                              volume = EXCLUDED.volume,
+                              daily_return = EXCLUDED.daily_return,
+                              updated_at = NOW()
+                      """
+
+                      execute_values(cursor, insert_query, records)
+                      conn.commit()
+
+                      # Verify insertion
+                      cursor.execute("""
+                          SELECT COUNT(*), MIN(trade_date), MAX(trade_date),
+                                 MIN(close_price), MAX(close_price)
+                          FROM market_data
+                          WHERE symbol = 'PLATINUM_FUTURES'
+                      """)
+
+                      count, min_date, max_date, min_price, max_price = cursor.fetchone()
+
+                      logger.info(f"✅ Successfully stored {count} platinum records")
+                      logger.info(f"Date range: {min_date} to {max_date}")
+                      logger.info(f"Price range: ${min_price:.2f} - ${max_price:.2f}")
+
+                      cursor.close()
+                      conn.close()
+                      return True
+
+                  except Exception as e:
+                      logger.error(f"Error storing platinum data: {e}")
+                      if 'conn' in locals():
+                          conn.rollback()
+                          conn.close()
+                      return False
+
+              def run_backfill(self):
+                  """Run the complete platinum backfill process"""
+                  logger.info("🚀 Starting platinum futures backfill process...")
+
+                  # Try primary method (yfinance)
+                  data = self.get_platinum_data_yfinance(years_back=5)
+
+                  # Try alternative method if primary fails
+                  if data.empty:
+                      logger.warning("Primary method failed, trying alternative...")
+                      data = self.get_platinum_data_alternative(years_back=5)
+
+                  if data.empty:
+                      logger.error("❌ All platinum data fetch methods failed")
+                      return False
+
+                  # Store the data
+                  success = self.store_platinum_data(data)
+
+                  if success:
+                      logger.info("🎉 Platinum backfill completed successfully!")
+                      return True
+                  else:
+                      logger.error("❌ Failed to store platinum data")
+                      return False
+
+          if __name__ == "__main__":
+              manager = PlatinumDataManager()
+              success = manager.run_backfill()
+
+              if not success:
+                  exit(1)
+
+              print("💎 Platinum futures data backfill complete!")
+          EOF
+
+          # Run the platinum backfill
+          python platinum_backfill.py
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+
+      restartPolicy: Never
+  backoffLimit: 2

@@ -1,0 +1,299 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: platinum-lunar-patterns
+  namespace: time-series-indexing
+  labels:
+    app: platinum-lunar-patterns
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: platinum-lunar-patterns
+    spec:
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: platinum-lunar
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "💎🌙 Platinum Futures Lunar Pattern Analysis"
+
+          # Install dependencies
+          apt-get update && apt-get install -y libpq-dev
+          pip install --no-cache-dir psycopg2-binary
+
+          # Create platinum lunar pattern analyzer
+          cat > platinum_lunar_patterns.py << 'EOF'
+          import psycopg2
+          import os
+          from collections import defaultdict
+
+          def analyze_platinum_lunar_patterns():
+              db_config = {
+                  'host': os.environ['DB_HOST'],
+                  'user': os.environ['DB_USER'],
+                  'database': os.environ['DB_NAME'],
+                  'password': os.environ['PGPASSWORD']
+              }
+
+              conn = psycopg2.connect(**db_config)
+              cursor = conn.cursor()
+
+              # Enhanced query with zodiac signs for platinum futures
+              query = """
+              WITH lunar_events_with_signs AS (
+                  SELECT DISTINCT
+                      dc.trade_date as event_date,
+                      pa.aspect_type,
+                      pa.planet2 as target_planet,
+                      pa.orb,
+                      moon_pos.zodiac_sign as moon_sign,
+                      target_pos.zodiac_sign as target_sign
+                  FROM daily_astrological_conditions dc
+                  JOIN daily_planetary_aspects pa ON dc.id = pa.conditions_id
+                  JOIN daily_planetary_positions moon_pos ON dc.id = moon_pos.conditions_id
+                      AND moon_pos.planet = 'Moon'
+                  LEFT JOIN daily_planetary_positions target_pos ON dc.id = target_pos.conditions_id
+                      AND target_pos.planet = pa.planet2
+                  WHERE pa.planet1 = 'Moon'
+                    AND dc.trade_date >= CURRENT_DATE - INTERVAL '5 years'
+                    AND pa.orb <= 3.0
+              ),
+              price_movements AS (
+                  SELECT
+                      le.aspect_type,
+                      le.target_planet,
+                      le.moon_sign,
+                      le.target_sign,
+                      CASE
+                          WHEN p2.close_price > p1.close_price THEN 'up'
+                          WHEN p2.close_price < p1.close_price THEN 'down'
+                          ELSE 'same'
+                      END as direction,
+                      ((p2.close_price - p1.close_price) / p1.close_price) * 100 as pct_change
+                  FROM lunar_events_with_signs le
+                  JOIN market_data p1 ON p1.trade_date = le.event_date
+                      AND p1.symbol = 'PLATINUM_FUTURES'
+                  JOIN market_data p2 ON p2.trade_date = le.event_date + INTERVAL '1 day'
+                      AND p2.symbol = 'PLATINUM_FUTURES'
+                  WHERE p1.close_price IS NOT NULL
+                    AND p2.close_price IS NOT NULL
+                    AND p1.close_price != p2.close_price
+              )
+              SELECT
+                  aspect_type,
+                  target_planet,
+                  moon_sign,
+                  target_sign,
+                  direction,
+                  COUNT(*) as count,
+                  AVG(pct_change) as avg_change
+              FROM price_movements
+              GROUP BY aspect_type, target_planet, moon_sign, target_sign, direction
+              HAVING COUNT(*) >= 2  -- Minimum 2 occurrences for sign-specific patterns
+              ORDER BY COUNT(*) DESC, aspect_type, target_planet, moon_sign, target_sign, direction
+              """
+
+              cursor.execute(query)
+              results = cursor.fetchall()
+
+              # Process results into patterns
+              patterns = defaultdict(lambda: {
+                  'up': 0, 'down': 0, 'up_avg': 0, 'down_avg': 0,
+                  'aspect_type': None, 'moon_sign': None, 'target_planet': None, 'target_sign': None
+              })
+
+              for aspect, planet, moon_sign, target_sign, direction, count, avg_change in results:
+                  # Create different pattern keys
+                  basic_key = f"Moon {aspect} {planet}"
+                  moon_sign_key = f"Moon in {moon_sign} {aspect} {planet}"
+                  if target_sign:
+                      full_sign_key = f"Moon in {moon_sign} {aspect} {planet} in {target_sign}"
+                  else:
+                      full_sign_key = moon_sign_key
+
+                  # Store data for all pattern types
+                  for key in [basic_key, moon_sign_key, full_sign_key]:
+                      patterns[key][direction] += count
+                      avg_change_float = float(avg_change)
+                      patterns[key][f"{direction}_avg"] = (patterns[key][f"{direction}_avg"] * (patterns[key][direction] - count) + avg_change_float * count) / patterns[key][direction]
+
+                      # Store metadata
+                      patterns[key]['aspect_type'] = aspect
+                      patterns[key]['target_planet'] = planet
+                      patterns[key]['moon_sign'] = moon_sign if ' in ' in key else None
+                      patterns[key]['target_sign'] = target_sign if target_sign and 'in {target_sign}' in key else None
+
+              # Find predictive patterns (>65% accuracy)
+              predictive = []
+              for pattern_name, data in patterns.items():
+                  total = data['up'] + data['down']
+                  if total >= 3:  # Need at least 3 total occurrences
+                      up_rate = data['up'] / total
+                      down_rate = data['down'] / total
+
+                      if up_rate >= 0.65:
+                          predictive.append({
+                              'pattern': pattern_name,
+                              'prediction': 'BULLISH',
+                              'accuracy': up_rate,
+                              'occurrences': total,
+                              'up_count': data['up'],
+                              'down_count': data['down'],
+                              'avg_up_move': float(data['up_avg']),
+                              'avg_down_move': float(data['down_avg']),
+                              'expected_return': up_rate * float(data['up_avg']),
+                              'specificity': 'sign-specific' if ' in ' in pattern_name else 'basic'
+                          })
+                      elif down_rate >= 0.65:
+                          predictive.append({
+                              'pattern': pattern_name,
+                              'prediction': 'BEARISH',
+                              'accuracy': down_rate,
+                              'occurrences': total,
+                              'up_count': data['up'],
+                              'down_count': data['down'],
+                              'avg_up_move': float(data['up_avg']),
+                              'avg_down_move': float(data['down_avg']),
+                              'expected_return': down_rate * abs(float(data['down_avg'])),
+                              'specificity': 'sign-specific' if ' in ' in pattern_name else 'basic'
+                          })
+
+              # Sort by accuracy
+              predictive.sort(key=lambda x: x['accuracy'], reverse=True)
+
+              print(f"\\n💎🌙 PLATINUM FUTURES LUNAR PATTERNS:")
+              print("=" * 70)
+              print(f"Found {len(predictive)} patterns with ≥65% accuracy")
+
+              if predictive:
+                  basic_patterns = [p for p in predictive if p['specificity'] == 'basic']
+                  sign_patterns = [p for p in predictive if p['specificity'] == 'sign-specific']
+
+                  print(f"\\n🔹 BASIC PATTERNS (no sign specificity): {len(basic_patterns)}")
+                  for i, p in enumerate(basic_patterns[:10], 1):  # Show top 10
+                      direction_emoji = "📈" if p['prediction'] == 'BULLISH' else "📉"
+                      print(f"{i}. {p['pattern']} → {p['prediction']} {direction_emoji}")
+                      print(f"   Accuracy: {p['accuracy']:.1%} | Sample: {p['occurrences']} events")
+                      print(f"   Expected Return: +{p['expected_return']:.2f}% per signal")
+                      print()
+
+                  print(f"\\n🌟 SIGN-SPECIFIC PATTERNS (with zodiac signs): {len(sign_patterns)}")
+                  for i, p in enumerate(sign_patterns[:15], 1):  # Show top 15
+                      direction_emoji = "📈" if p['prediction'] == 'BULLISH' else "📉"
+                      print(f"{i}. {p['pattern']} → {p['prediction']} {direction_emoji}")
+                      print(f"   Accuracy: {p['accuracy']:.1%} | Sample: {p['occurrences']} events")
+                      print(f"   Expected Return: +{p['expected_return']:.2f}% per signal")
+                      print()
+
+                  # Compare with oil patterns
+                  if sign_patterns:
+                      print(f"\\n🎯 PLATINUM vs OIL COMPARISON:")
+                      print("-" * 40)
+
+                      # Count moon sign patterns for platinum
+                      moon_signs = {}
+                      for p in sign_patterns:
+                          if 'Moon in ' in p['pattern']:
+                              sign = p['pattern'].split('Moon in ')[1].split(' ')[0]
+                              if sign not in moon_signs:
+                                  moon_signs[sign] = []
+                              moon_signs[sign].append(p)
+
+                      print(f"🌙 Moon Signs with Predictive Patterns in PLATINUM:")
+                      for sign, patterns in sorted(moon_signs.items(), key=lambda x: len(x[1]), reverse=True):
+                          bullish = len([p for p in patterns if p['prediction'] == 'BULLISH'])
+                          bearish = len([p for p in patterns if p['prediction'] == 'BEARISH'])
+                          print(f"   {sign}: {len(patterns)} patterns (📈{bullish} 📉{bearish})")
+
+                      best_pattern = predictive[0]
+                      print(f"\\n🏆 BEST PLATINUM PATTERN:")
+                      print(f"   {best_pattern['pattern']}")
+                      print(f"   {best_pattern['accuracy']:.1%} accuracy over {best_pattern['occurrences']} events")
+                      print(f"   Expected return: +{best_pattern['expected_return']:.2f}% per signal")
+
+                      if basic_patterns and sign_patterns:
+                          best_basic = basic_patterns[0]
+                          best_sign = sign_patterns[0]
+                          print(f"\\n📊 PATTERN COMPARISON (Platinum):")
+                          print(f"   Best Basic: {best_basic['pattern']} ({best_basic['accuracy']:.1%})")
+                          print(f"   Best Sign-Specific: {best_sign['pattern']} ({best_sign['accuracy']:.1%})")
+
+                          if best_sign['accuracy'] > best_basic['accuracy']:
+                              print(f"   ✅ Sign-specific patterns are MORE accurate for Platinum!")
+                              print(f"   Improvement: +{(best_sign['accuracy'] - best_basic['accuracy'])*100:.1f} percentage points")
+                          else:
+                              print(f"   ⚠️ Basic patterns are still more accurate for Platinum")
+
+              else:
+                  print("❌ No significant platinum lunar patterns found")
+
+              print(f"\\n🔗 MARKET DATA SUMMARY:")
+              cursor.execute("""
+              SELECT COUNT(*), MIN(trade_date), MAX(trade_date),
+                     MIN(close_price), MAX(close_price)
+              FROM market_data
+              WHERE symbol = 'PLATINUM_FUTURES'
+              """)
+
+              count, min_date, max_date, min_price, max_price = cursor.fetchone()
+              print(f"Platinum data: {count} records from {min_date} to {max_date}")
+              print(f"Price range: ${min_price:.2f} - ${max_price:.2f} per ounce")
+
+              cursor.close()
+              conn.close()
+              return predictive
+
+          if __name__ == "__main__":
+              patterns = analyze_platinum_lunar_patterns()
+              print(f"\\n🎯 FINAL SUMMARY:")
+              print(f"Total platinum lunar patterns discovered: {len(patterns)}")
+
+              basic_count = len([p for p in patterns if p['specificity'] == 'basic'])
+              sign_count = len([p for p in patterns if p['specificity'] == 'sign-specific'])
+
+              print(f"Basic patterns: {basic_count}")
+              print(f"Sign-specific patterns: {sign_count}")
+              print(f"\\n💎 Platinum lunar analysis complete!")
+
+              if patterns:
+                  print(f"✅ Lunar patterns DO affect platinum futures prices!")
+              else:
+                  print(f"❌ No strong lunar patterns found for platinum")
+          EOF
+
+          # Run the platinum lunar analysis
+          python platinum_lunar_patterns.py
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+
+      restartPolicy: Never
+  backoffLimit: 1

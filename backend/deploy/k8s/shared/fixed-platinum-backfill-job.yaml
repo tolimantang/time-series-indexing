@@ -1,0 +1,313 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fixed-platinum-backfill
+  namespace: time-series-indexing
+  labels:
+    app: fixed-platinum-backfill
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: fixed-platinum-backfill
+    spec:
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: fixed-platinum-backfill
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "💎 Fixed Platinum Futures Data Backfill"
+
+          # Install dependencies
+          apt-get update && apt-get install -y libpq-dev curl
+          pip install --no-cache-dir psycopg2-binary requests pandas yfinance
+
+          # Create fixed platinum data backfill script
+          cat > fixed_platinum_backfill.py << 'EOF'
+          import psycopg2
+          import yfinance as yf
+          import requests
+          import pandas as pd
+          import os
+          import logging
+          from datetime import datetime, timedelta
+          from psycopg2.extras import execute_values
+
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger(__name__)
+
+          class FixedPlatinumDataManager:
+              def __init__(self):
+                  self.db_config = {
+                      'host': os.environ['DB_HOST'],
+                      'user': os.environ['DB_USER'],
+                      'database': os.environ['DB_NAME'],
+                      'password': os.environ['DB_PASSWORD'],
+                      'port': int(os.environ.get('DB_PORT', '5432'))
+                  }
+
+              def get_platinum_data_yfinance(self, years_back=5):
+                  """Get platinum futures data with proper column handling"""
+                  logger.info(f"Fetching {years_back} years of platinum data...")
+
+                  # Platinum symbols to try (including monthly contracts)
+                  symbols = [
+                      'PL=F',          # Generic front month
+                      'PLF25.NYM',     # January 2025
+                      'PLG25.NYM',     # February 2025
+                      'PLH25.NYM',     # March 2025
+                      'PPLT',          # ETF alternative
+                      'PL',            # Simple symbol
+                  ]
+
+                  end_date = datetime.now()
+                  start_date = end_date - timedelta(days=years_back * 365 + 30)
+
+                  best_data = pd.DataFrame()
+                  best_symbol = None
+
+                  for symbol in symbols:
+                      try:
+                          logger.info(f"Trying platinum symbol: {symbol}")
+                          ticker = yf.Ticker(symbol)
+                          data = ticker.history(start=start_date, end=end_date, interval='1d')
+
+                          if not data.empty:
+                              logger.info(f"Found {len(data)} records for {symbol}")
+                              logger.info(f"Columns: {list(data.columns)}")
+
+                              if len(data) > len(best_data):
+                                  best_data = data.copy()
+                                  best_symbol = symbol
+                                  logger.info(f"New best symbol: {symbol} with {len(data)} records")
+
+                      except Exception as e:
+                          logger.warning(f"Failed to fetch {symbol}: {e}")
+                          continue
+
+                  if not best_data.empty:
+                      logger.info(f"Processing platinum data from {best_symbol}: {len(best_data)} records")
+
+                      # Reset index to get Date as a column
+                      best_data = best_data.reset_index()
+
+                      # Handle different possible column names from yfinance
+                      column_mapping = {}
+
+                      # Date column
+                      if 'Date' in best_data.columns:
+                          column_mapping['Date'] = 'trade_date'
+                      elif 'Datetime' in best_data.columns:
+                          column_mapping['Datetime'] = 'trade_date'
+
+                      # Price columns
+                      for col in best_data.columns:
+                          if col.lower() == 'open':
+                              column_mapping[col] = 'open_price'
+                          elif col.lower() == 'high':
+                              column_mapping[col] = 'high_price'
+                          elif col.lower() == 'low':
+                              column_mapping[col] = 'low_price'
+                          elif col.lower() == 'close':
+                              column_mapping[col] = 'close_price'
+                          elif col.lower() in ['adj close', 'adj_close', 'adjusted close']:
+                              column_mapping[col] = 'adjusted_close'
+                          elif col.lower() == 'volume':
+                              column_mapping[col] = 'volume'
+
+                      # Apply column mapping
+                      best_data = best_data.rename(columns=column_mapping)
+
+                      # Add missing columns with defaults
+                      if 'adjusted_close' not in best_data.columns:
+                          best_data['adjusted_close'] = best_data['close_price']
+
+                      if 'open_price' not in best_data.columns:
+                          best_data['open_price'] = best_data['close_price']
+
+                      if 'high_price' not in best_data.columns:
+                          best_data['high_price'] = best_data['close_price']
+
+                      if 'low_price' not in best_data.columns:
+                          best_data['low_price'] = best_data['close_price']
+
+                      if 'volume' not in best_data.columns:
+                          best_data['volume'] = 0
+
+                      # Add symbol identifier
+                      best_data['symbol'] = 'PLATINUM_FUTURES'
+
+                      # Calculate daily returns
+                      best_data['daily_return'] = best_data['close_price'].pct_change()
+
+                      # Convert trade_date to date only (remove time component)
+                      if best_data['trade_date'].dtype == 'datetime64[ns, America/New_York]':
+                          best_data['trade_date'] = best_data['trade_date'].dt.date
+                      elif hasattr(best_data['trade_date'].iloc[0], 'date'):
+                          best_data['trade_date'] = best_data['trade_date'].apply(lambda x: x.date())
+
+                      # Remove any rows with NaN close prices
+                      best_data = best_data.dropna(subset=['close_price'])
+
+                      logger.info(f"✅ Processed platinum data: {len(best_data)} records")
+                      logger.info(f"Date range: {best_data['trade_date'].min()} to {best_data['trade_date'].max()}")
+                      logger.info(f"Price range: ${best_data['close_price'].min():.2f} - ${best_data['close_price'].max():.2f}")
+                      logger.info(f"Final columns: {list(best_data.columns)}")
+
+                      return best_data
+
+                  logger.error("No platinum data could be fetched from any symbol")
+                  return pd.DataFrame()
+
+              def store_platinum_data(self, data):
+                  """Store platinum data in PostgreSQL market_data table"""
+                  if data.empty:
+                      logger.error("No platinum data to store")
+                      return False
+
+                  logger.info(f"Storing {len(data)} platinum records to PostgreSQL...")
+
+                  try:
+                      conn = psycopg2.connect(**self.db_config)
+                      cursor = conn.cursor()
+
+                      # Prepare records for insertion
+                      records = []
+                      for _, row in data.iterrows():
+                          record = (
+                              row['symbol'],
+                              row['trade_date'],
+                              float(row['open_price']) if pd.notna(row['open_price']) else None,
+                              float(row['high_price']) if pd.notna(row['high_price']) else None,
+                              float(row['low_price']) if pd.notna(row['low_price']) else None,
+                              float(row['close_price']),
+                              float(row['adjusted_close']) if pd.notna(row['adjusted_close']) else float(row['close_price']),
+                              int(row['volume']) if pd.notna(row['volume']) else 0,
+                              float(row['daily_return']) if pd.notna(row['daily_return']) else None
+                          )
+                          records.append(record)
+
+                      logger.info(f"Prepared {len(records)} records for insertion")
+
+                      # Insert with conflict resolution
+                      insert_query = """
+                          INSERT INTO market_data (
+                              symbol, trade_date, open_price, high_price, low_price,
+                              close_price, adjusted_close, volume, daily_return
+                          ) VALUES %s
+                          ON CONFLICT (symbol, trade_date)
+                          DO UPDATE SET
+                              open_price = EXCLUDED.open_price,
+                              high_price = EXCLUDED.high_price,
+                              low_price = EXCLUDED.low_price,
+                              close_price = EXCLUDED.close_price,
+                              adjusted_close = EXCLUDED.adjusted_close,
+                              volume = EXCLUDED.volume,
+                              daily_return = EXCLUDED.daily_return,
+                              updated_at = NOW()
+                      """
+
+                      execute_values(cursor, insert_query, records)
+                      conn.commit()
+
+                      # Verify insertion
+                      cursor.execute("""
+                          SELECT COUNT(*), MIN(trade_date), MAX(trade_date),
+                                 MIN(close_price), MAX(close_price)
+                          FROM market_data
+                          WHERE symbol = 'PLATINUM_FUTURES'
+                      """)
+
+                      count, min_date, max_date, min_price, max_price = cursor.fetchone()
+
+                      logger.info(f"✅ Successfully stored {count} platinum records")
+                      logger.info(f"Date range: {min_date} to {max_date}")
+                      logger.info(f"Price range: ${min_price:.2f} - ${max_price:.2f}")
+
+                      cursor.close()
+                      conn.close()
+                      return True
+
+                  except Exception as e:
+                      logger.error(f"Error storing platinum data: {e}")
+                      if 'conn' in locals():
+                          conn.rollback()
+                          conn.close()
+                      return False
+
+              def run_backfill(self):
+                  """Run the complete platinum backfill process"""
+                  logger.info("🚀 Starting FIXED platinum futures backfill process...")
+
+                  # Get the data with proper column handling
+                  data = self.get_platinum_data_yfinance(years_back=5)
+
+                  if data.empty:
+                      logger.error("❌ Failed to fetch platinum data")
+                      return False
+
+                  # Store the data
+                  success = self.store_platinum_data(data)
+
+                  if success:
+                      logger.info("🎉 Fixed platinum backfill completed successfully!")
+                      return True
+                  else:
+                      logger.error("❌ Failed to store platinum data")
+                      return False
+
+          if __name__ == "__main__":
+              manager = FixedPlatinumDataManager()
+              success = manager.run_backfill()
+
+              if not success:
+                  exit(1)
+
+              print("💎 Fixed platinum futures data backfill complete!")
+          EOF
+
+          # Run the fixed platinum backfill
+          python fixed_platinum_backfill.py
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+
+      restartPolicy: Never
+  backoffLimit: 2
