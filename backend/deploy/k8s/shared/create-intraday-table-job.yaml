@@ -1,0 +1,222 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-intraday-table
+  namespace: time-series-indexing
+  labels:
+    app: create-intraday-table
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: create-intraday-table
+    spec:
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: create-intraday-table
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "📊 Creating market_data_intraday table schema"
+
+          # Install dependencies
+          apt-get update && apt-get install -y libpq-dev
+          pip install --no-cache-dir psycopg2-binary
+
+          # Create table schema script
+          cat > create_intraday_table.py << 'EOF'
+          import psycopg2
+          import os
+          import logging
+
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger(__name__)
+
+          def create_intraday_table():
+              """Create market_data_intraday table for hourly/intraday price data"""
+              db_config = {
+                  'host': os.environ['DB_HOST'],
+                  'user': os.environ['DB_USER'],
+                  'database': os.environ['DB_NAME'],
+                  'password': os.environ['DB_PASSWORD'],
+                  'port': int(os.environ.get('DB_PORT', '5432'))
+              }
+
+              try:
+                  conn = psycopg2.connect(**db_config)
+                  cursor = conn.cursor()
+
+                  # Create the intraday table
+                  create_table_sql = """
+                  CREATE TABLE IF NOT EXISTS market_data_intraday (
+                      id SERIAL PRIMARY KEY,
+                      symbol VARCHAR(50) NOT NULL,
+                      datetime TIMESTAMP NOT NULL,
+                      open_price DECIMAL(12,4),
+                      high_price DECIMAL(12,4),
+                      low_price DECIMAL(12,4),
+                      close_price DECIMAL(12,4) NOT NULL,
+                      adjusted_close DECIMAL(12,4),
+                      volume BIGINT DEFAULT 0,
+                      interval_type VARCHAR(10) NOT NULL DEFAULT '1h',
+                      created_at TIMESTAMP DEFAULT NOW(),
+                      updated_at TIMESTAMP DEFAULT NOW(),
+
+                      -- Unique constraint to prevent duplicates
+                      UNIQUE(symbol, datetime, interval_type)
+                  );
+                  """
+
+                  logger.info("Creating market_data_intraday table...")
+                  cursor.execute(create_table_sql)
+
+                  # Create indexes for performance
+                  indexes = [
+                      "CREATE INDEX IF NOT EXISTS idx_intraday_symbol_datetime ON market_data_intraday(symbol, datetime);",
+                      "CREATE INDEX IF NOT EXISTS idx_intraday_datetime ON market_data_intraday(datetime);",
+                      "CREATE INDEX IF NOT EXISTS idx_intraday_symbol ON market_data_intraday(symbol);",
+                      "CREATE INDEX IF NOT EXISTS idx_intraday_interval ON market_data_intraday(interval_type);"
+                  ]
+
+                  logger.info("Creating performance indexes...")
+                  for index_sql in indexes:
+                      cursor.execute(index_sql)
+
+                  # Create trigger for updated_at
+                  trigger_function_sql = """
+                  CREATE OR REPLACE FUNCTION update_intraday_updated_at_column()
+                  RETURNS TRIGGER AS $BODY$
+                  BEGIN
+                      NEW.updated_at = NOW();
+                      RETURN NEW;
+                  END;
+                  $BODY$ language 'plpgsql';
+                  """
+
+                  trigger_sql = """
+                  DROP TRIGGER IF EXISTS update_intraday_updated_at ON market_data_intraday;
+                  CREATE TRIGGER update_intraday_updated_at
+                      BEFORE UPDATE ON market_data_intraday
+                      FOR EACH ROW EXECUTE FUNCTION update_intraday_updated_at_column();
+                  """
+
+                  logger.info("Creating updated_at trigger...")
+                  cursor.execute(trigger_function_sql)
+                  cursor.execute(trigger_sql)
+
+                  # Add comments for documentation
+                  comment_sql = """
+                  COMMENT ON TABLE market_data_intraday IS 'Intraday market data (hourly and sub-daily intervals)';
+                  COMMENT ON COLUMN market_data_intraday.symbol IS 'Market symbol identifier';
+                  COMMENT ON COLUMN market_data_intraday.datetime IS 'Specific timestamp for the data point';
+                  COMMENT ON COLUMN market_data_intraday.interval_type IS 'Data interval type (1h, 30m, 15m, etc.)';
+                  COMMENT ON COLUMN market_data_intraday.close_price IS 'Closing price at the end of the interval';
+                  """
+
+                  cursor.execute(comment_sql)
+
+                  conn.commit()
+
+                  # Verify table creation
+                  cursor.execute("""
+                  SELECT
+                      table_name,
+                      column_name,
+                      data_type,
+                      is_nullable,
+                      column_default
+                  FROM information_schema.columns
+                  WHERE table_name = 'market_data_intraday'
+                  ORDER BY ordinal_position;
+                  """)
+
+                  columns = cursor.fetchall()
+
+                  logger.info("✅ market_data_intraday table created successfully!")
+                  logger.info("Table structure:")
+                  for table_name, col_name, data_type, nullable, default in columns:
+                      null_str = "NULL" if nullable == "YES" else "NOT NULL"
+                      default_str = f" DEFAULT {default}" if default else ""
+                      logger.info(f"  {col_name}: {data_type} {null_str}{default_str}")
+
+                  # Check indexes
+                  cursor.execute("""
+                  SELECT indexname, indexdef
+                  FROM pg_indexes
+                  WHERE tablename = 'market_data_intraday';
+                  """)
+
+                  indexes = cursor.fetchall()
+                  logger.info(f"\nCreated {len(indexes)} indexes:")
+                  for idx_name, idx_def in indexes:
+                      logger.info(f"  {idx_name}")
+
+                  # Show table size (should be 0 initially)
+                  cursor.execute("""
+                  SELECT
+                      COUNT(*) as row_count,
+                      pg_size_pretty(pg_total_relation_size('market_data_intraday')) as table_size
+                  FROM market_data_intraday;
+                  """)
+
+                  row_count, table_size = cursor.fetchone()
+                  logger.info(f"\nTable stats: {row_count} rows, {table_size}")
+
+                  cursor.close()
+                  conn.close()
+
+                  return True
+
+              except Exception as e:
+                  logger.error(f"Error creating intraday table: {e}")
+                  if 'conn' in locals():
+                      conn.rollback()
+                      conn.close()
+                  return False
+
+          if __name__ == "__main__":
+              success = create_intraday_table()
+
+              if success:
+                  print("📊 market_data_intraday table ready for hourly data!")
+              else:
+                  print("❌ Failed to create intraday table")
+                  exit(1)
+          EOF
+
+          # Run the table creation
+          python create_intraday_table.py
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+
+      restartPolicy: Never
+  backoffLimit: 1

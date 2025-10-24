@@ -1,0 +1,363 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: platinum-hourly-backfill
+  namespace: time-series-indexing
+  labels:
+    app: platinum-hourly-backfill
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: platinum-hourly-backfill
+    spec:
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: platinum-hourly-backfill
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "💎⏰ Platinum Hourly Data Backfill (5 Years)"
+
+          # Install dependencies
+          apt-get update && apt-get install -y libpq-dev curl
+          pip install --no-cache-dir psycopg2-binary requests pandas yfinance pytz
+
+          # Create platinum hourly backfill script
+          cat > platinum_hourly_backfill.py << 'EOF'
+          import psycopg2
+          import yfinance as yf
+          import requests
+          import pandas as pd
+          import os
+          import logging
+          import pytz
+          from datetime import datetime, timedelta
+          from psycopg2.extras import execute_values
+
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger(__name__)
+
+          class PlatinumHourlyDataManager:
+              def __init__(self):
+                  self.db_config = {
+                      'host': os.environ['DB_HOST'],
+                      'user': os.environ['DB_USER'],
+                      'database': os.environ['DB_NAME'],
+                      'password': os.environ['DB_PASSWORD'],
+                      'port': int(os.environ.get('DB_PORT', '5432'))
+                  }
+
+              def get_platinum_hourly_data(self, years_back=5):
+                  """Get platinum futures hourly data from Yahoo Finance"""
+                  logger.info(f"Fetching {years_back} years of hourly platinum data...")
+
+                  # Platinum symbols to try for hourly data
+                  symbols = [
+                      'PL=F',          # Generic front month platinum futures
+                      'PPLT',          # Physical platinum ETF (as backup)
+                  ]
+
+                  end_date = datetime.now()
+                  start_date = end_date - timedelta(days=years_back * 365 + 30)
+
+                  best_data = pd.DataFrame()
+                  best_symbol = None
+
+                  for symbol in symbols:
+                      try:
+                          logger.info(f"Trying hourly data for symbol: {symbol}")
+                          ticker = yf.Ticker(symbol)
+
+                          # Get hourly data (Yahoo Finance supports 1h intervals for up to 730 days)
+                          # We'll need to chunk this into smaller periods
+                          all_data = []
+
+                          # Split into 2-year chunks to respect Yahoo Finance limits
+                          current_end = end_date
+                          total_days = (end_date - start_date).days
+
+                          while current_end > start_date:
+                              chunk_start = max(start_date, current_end - timedelta(days=700))  # ~2 years
+
+                              logger.info(f"Fetching chunk: {chunk_start.date()} to {current_end.date()}")
+
+                              try:
+                                  chunk_data = ticker.history(
+                                      start=chunk_start,
+                                      end=current_end,
+                                      interval='1h',
+                                      prepost=False,  # Exclude pre/post market
+                                      auto_adjust=False
+                                  )
+
+                                  if not chunk_data.empty:
+                                      all_data.append(chunk_data)
+                                      logger.info(f"  Got {len(chunk_data)} hourly records")
+
+                              except Exception as e:
+                                  logger.warning(f"  Chunk failed: {e}")
+
+                              current_end = chunk_start - timedelta(days=1)
+
+                          if all_data:
+                              # Combine all chunks
+                              data = pd.concat(all_data, axis=0)
+                              data = data.sort_index()  # Sort by datetime
+                              data = data[~data.index.duplicated(keep='first')]  # Remove any duplicates
+
+                              logger.info(f"Combined {len(data)} hourly records for {symbol}")
+                              logger.info(f"Columns: {list(data.columns)}")
+
+                              if len(data) > len(best_data):
+                                  best_data = data.copy()
+                                  best_symbol = symbol
+                                  logger.info(f"New best symbol: {symbol} with {len(data)} records")
+
+                      except Exception as e:
+                          logger.warning(f"Failed to fetch hourly data for {symbol}: {e}")
+                          continue
+
+                  if not best_data.empty:
+                      logger.info(f"Processing hourly platinum data from {best_symbol}: {len(best_data)} records")
+
+                      # Reset index to get Datetime as a column
+                      best_data = best_data.reset_index()
+
+                      # Handle column mapping for yfinance hourly data
+                      column_mapping = {}
+
+                      # Datetime column
+                      if 'Datetime' in best_data.columns:
+                          column_mapping['Datetime'] = 'datetime'
+                      elif 'Date' in best_data.columns:
+                          column_mapping['Date'] = 'datetime'
+
+                      # Price columns
+                      for col in best_data.columns:
+                          if col == 'Open':
+                              column_mapping[col] = 'open_price'
+                          elif col == 'High':
+                              column_mapping[col] = 'high_price'
+                          elif col == 'Low':
+                              column_mapping[col] = 'low_price'
+                          elif col == 'Close':
+                              column_mapping[col] = 'close_price'
+                          elif col == 'Adj Close':
+                              column_mapping[col] = 'adjusted_close'
+                          elif col == 'Volume':
+                              column_mapping[col] = 'volume'
+
+                      # Apply column mapping
+                      best_data = best_data.rename(columns=column_mapping)
+
+                      # Add missing columns with defaults
+                      if 'adjusted_close' not in best_data.columns:
+                          best_data['adjusted_close'] = best_data['close_price']
+
+                      if 'open_price' not in best_data.columns:
+                          best_data['open_price'] = best_data['close_price']
+
+                      if 'high_price' not in best_data.columns:
+                          best_data['high_price'] = best_data['close_price']
+
+                      if 'low_price' not in best_data.columns:
+                          best_data['low_price'] = best_data['close_price']
+
+                      if 'volume' not in best_data.columns:
+                          best_data['volume'] = 0
+
+                      # Add metadata
+                      best_data['symbol'] = 'PLATINUM_FUTURES'
+                      best_data['interval_type'] = '1h'
+
+                      # Ensure datetime is timezone-aware (Yahoo returns US/Eastern)
+                      if best_data['datetime'].dt.tz is None:
+                          # Assume US/Eastern if no timezone
+                          best_data['datetime'] = pd.to_datetime(best_data['datetime']).dt.tz_localize('US/Eastern')
+
+                      # Convert to UTC for consistent storage
+                      best_data['datetime'] = best_data['datetime'].dt.tz_convert('UTC')
+
+                      # Remove any rows with NaN close prices
+                      best_data = best_data.dropna(subset=['close_price'])
+
+                      # Filter to market hours only (roughly 8 AM to 4 PM Eastern, now in UTC)
+                      # This removes overnight gaps and weekend data
+                      best_data = best_data[best_data['datetime'].dt.dayofweek < 5]  # Weekdays only
+
+                      logger.info(f"✅ Processed hourly platinum data: {len(best_data)} records")
+                      logger.info(f"Date range: {best_data['datetime'].min()} to {best_data['datetime'].max()}")
+                      logger.info(f"Price range: ${best_data['close_price'].min():.2f} - ${best_data['close_price'].max():.2f}")
+                      logger.info(f"Final columns: {list(best_data.columns)}")
+
+                      return best_data
+
+                  logger.error("No hourly platinum data could be fetched from any symbol")
+                  return pd.DataFrame()
+
+              def store_hourly_data(self, data):
+                  """Store hourly platinum data in market_data_intraday table"""
+                  if data.empty:
+                      logger.error("No hourly platinum data to store")
+                      return False
+
+                  logger.info(f"Storing {len(data)} hourly platinum records to PostgreSQL...")
+
+                  try:
+                      conn = psycopg2.connect(**self.db_config)
+                      cursor = conn.cursor()
+
+                      # Prepare records for insertion
+                      records = []
+                      for _, row in data.iterrows():
+                          record = (
+                              row['symbol'],
+                              row['datetime'],
+                              float(row['open_price']) if pd.notna(row['open_price']) else None,
+                              float(row['high_price']) if pd.notna(row['high_price']) else None,
+                              float(row['low_price']) if pd.notna(row['low_price']) else None,
+                              float(row['close_price']),
+                              float(row['adjusted_close']) if pd.notna(row['adjusted_close']) else float(row['close_price']),
+                              int(row['volume']) if pd.notna(row['volume']) else 0,
+                              row['interval_type']
+                          )
+                          records.append(record)
+
+                      logger.info(f"Prepared {len(records)} hourly records for insertion")
+
+                      # Insert with conflict resolution
+                      insert_query = """
+                          INSERT INTO market_data_intraday (
+                              symbol, datetime, open_price, high_price, low_price,
+                              close_price, adjusted_close, volume, interval_type
+                          ) VALUES %s
+                          ON CONFLICT (symbol, datetime, interval_type)
+                          DO UPDATE SET
+                              open_price = EXCLUDED.open_price,
+                              high_price = EXCLUDED.high_price,
+                              low_price = EXCLUDED.low_price,
+                              close_price = EXCLUDED.close_price,
+                              adjusted_close = EXCLUDED.adjusted_close,
+                              volume = EXCLUDED.volume,
+                              updated_at = NOW()
+                      """
+
+                      execute_values(cursor, insert_query, records, page_size=1000)
+                      conn.commit()
+
+                      # Verify insertion
+                      cursor.execute("""
+                          SELECT COUNT(*), MIN(datetime), MAX(datetime),
+                                 MIN(close_price), MAX(close_price)
+                          FROM market_data_intraday
+                          WHERE symbol = 'PLATINUM_FUTURES' AND interval_type = '1h'
+                      """)
+
+                      count, min_time, max_time, min_price, max_price = cursor.fetchone()
+
+                      logger.info(f"✅ Successfully stored {count} hourly platinum records")
+                      logger.info(f"Time range: {min_time} to {max_time}")
+                      logger.info(f"Price range: ${min_price:.2f} - ${max_price:.2f}")
+
+                      # Show data distribution by hour
+                      cursor.execute("""
+                          SELECT EXTRACT(hour FROM datetime) as hour, COUNT(*) as count
+                          FROM market_data_intraday
+                          WHERE symbol = 'PLATINUM_FUTURES' AND interval_type = '1h'
+                          GROUP BY EXTRACT(hour FROM datetime)
+                          ORDER BY hour
+                      """)
+
+                      hourly_dist = cursor.fetchall()
+                      logger.info("Hourly data distribution:")
+                      for hour, count in hourly_dist:
+                          logger.info(f"  Hour {int(hour):02d}: {count} records")
+
+                      cursor.close()
+                      conn.close()
+                      return True
+
+                  except Exception as e:
+                      logger.error(f"Error storing hourly platinum data: {e}")
+                      if 'conn' in locals():
+                          conn.rollback()
+                          conn.close()
+                      return False
+
+              def run_hourly_backfill(self):
+                  """Run the complete hourly platinum backfill process"""
+                  logger.info("🚀 Starting platinum hourly data backfill (5 years)...")
+
+                  # Get the hourly data
+                  data = self.get_platinum_hourly_data(years_back=5)
+
+                  if data.empty:
+                      logger.error("❌ Failed to fetch hourly platinum data")
+                      return False
+
+                  # Store the data
+                  success = self.store_hourly_data(data)
+
+                  if success:
+                      logger.info("🎉 Platinum hourly backfill completed successfully!")
+                      return True
+                  else:
+                      logger.error("❌ Failed to store hourly platinum data")
+                      return False
+
+          if __name__ == "__main__":
+              manager = PlatinumHourlyDataManager()
+              success = manager.run_hourly_backfill()
+
+              if not success:
+                  exit(1)
+
+              print("💎⏰ Platinum hourly futures data backfill complete!")
+              print("Ready for precise lunar transit timing analysis!")
+          EOF
+
+          # Run the hourly platinum backfill
+          python platinum_hourly_backfill.py
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1500m"
+
+      restartPolicy: Never
+  backoffLimit: 2
