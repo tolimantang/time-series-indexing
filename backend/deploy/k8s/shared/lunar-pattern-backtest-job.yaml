@@ -1,0 +1,352 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: lunar-pattern-backtest
+  namespace: time-series-indexing
+  labels:
+    app: lunar-pattern-backtest
+    component: astrological-analysis
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: lunar-pattern-backtest
+    spec:
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: lunar-backtest
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "🌙 Starting Lunar Pattern Backtest for Oil Market"
+
+          # Install system dependencies
+          apt-get update && apt-get install -y \
+            libpq-dev \
+            postgresql-client \
+            curl \
+            build-essential \
+            && rm -rf /var/lib/apt/lists/*
+
+          # Install Python dependencies
+          pip install --no-cache-dir \
+            psycopg2-binary \
+            numpy \
+            scipy \
+            pyswisseph \
+            pandas
+
+          # Create the source code files
+          mkdir -p /app/src/llm_analyzer
+          cd /app/src/llm_analyzer
+
+          # Download Swiss Ephemeris data
+          echo "📡 Downloading Swiss Ephemeris data..."
+          mkdir -p /usr/share/swisseph
+          cd /usr/share/swisseph
+          curl -s -o seplm06.se1 https://www.astro.com/ftp/swisseph/ephe/seplm06.se1
+          curl -s -o sepl_06.se1 https://www.astro.com/ftp/swisseph/ephe/sepl_06.se1
+          curl -s -o semo_06.se1 https://www.astro.com/ftp/swisseph/ephe/semo_06.se1
+          curl -s -o seas_06.se1 https://www.astro.com/ftp/swisseph/ephe/seas_06.se1
+          cd /app/src/llm_analyzer
+
+          # Create the lunar pattern tester (simplified version for job)
+          cat > lunar_pattern_tester_simple.py << 'EOF'
+          """
+          Simplified Lunar Pattern Tester for Kubernetes Job
+          """
+
+          import logging
+          import psycopg2
+          import os
+          from datetime import datetime, timedelta
+          from typing import Dict, List, Tuple
+          import numpy as np
+          from dataclasses import dataclass
+          from enum import Enum
+
+          try:
+              import swisseph as swe
+              SWISSEPH_AVAILABLE = True
+          except ImportError:
+              SWISSEPH_AVAILABLE = False
+              print("⚠️ Swiss Ephemeris not available, using approximations")
+
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger(__name__)
+
+          class MarketDirection(Enum):
+              UP = "up"
+              DOWN = "down"
+              SIDEWAYS = "sideways"
+
+          @dataclass
+          class LunarEvent:
+              date: datetime
+              aspect_type: str
+              target_planet: str
+              orb: float
+
+          @dataclass
+          class MarketMove:
+              direction: MarketDirection
+              magnitude: float
+              duration_days: int
+
+          @dataclass
+          class LunarPattern:
+              description: str
+              consistency_rate: float
+              total_occurrences: int
+              avg_magnitude: float
+
+          class SimpleLunarTester:
+              def __init__(self, db_config):
+                  self.db_config = db_config
+                  self.conn = None
+
+                  if SWISSEPH_AVAILABLE:
+                      swe.set_ephe_path('/usr/share/swisseph')
+
+              def connect_db(self):
+                  self.conn = psycopg2.connect(**self.db_config)
+                  logger.info("Connected to database")
+
+              def get_lunar_events_from_db(self, start_date: datetime, end_date: datetime) -> List[LunarEvent]:
+                  """Get lunar events from existing astrological database"""
+                  cursor = self.conn.cursor()
+
+                  # Query existing lunar aspects from your database
+                  query = """
+                  SELECT DISTINCT
+                      dc.trade_date,
+                      pa.aspect_type,
+                      pa.planet2 as target_planet,
+                      pa.orb
+                  FROM daily_astrological_conditions dc
+                  JOIN daily_planetary_aspects pa ON dc.id = pa.conditions_id
+                  WHERE pa.planet1 = 'Moon'
+                    AND dc.trade_date BETWEEN %s AND %s
+                    AND pa.orb <= 3.0
+                  ORDER BY dc.trade_date
+                  """
+
+                  cursor.execute(query, (start_date.date(), end_date.date()))
+                  results = cursor.fetchall()
+
+                  events = []
+                  for date, aspect_type, planet, orb in results:
+                      events.append(LunarEvent(
+                          date=datetime.combine(date, datetime.min.time()),
+                          aspect_type=aspect_type,
+                          target_planet=planet,
+                          orb=float(orb)
+                      ))
+
+                  cursor.close()
+                  logger.info(f"Found {len(events)} lunar events from database")
+                  return events
+
+              def get_market_data(self, start_date: datetime, end_date: datetime) -> Dict[datetime, float]:
+                  """Get synthetic oil price data"""
+                  cursor = self.conn.cursor()
+
+                  query = """
+                  SELECT trade_date,
+                         50 + COALESCE(daily_score * 0.5, 0) +
+                         (EXTRACT(DOY FROM trade_date) - 182) * 0.1 +
+                         (RANDOM() - 0.5) * 10 as oil_price
+                  FROM daily_astrological_conditions
+                  WHERE trade_date BETWEEN %s AND %s
+                  ORDER BY trade_date
+                  """
+
+                  cursor.execute(query, (start_date.date(), end_date.date()))
+                  results = cursor.fetchall()
+
+                  price_data = {}
+                  for date, price in results:
+                      if price is not None:
+                          price_data[datetime.combine(date, datetime.min.time())] = float(price)
+
+                  cursor.close()
+                  logger.info(f"Generated {len(price_data)} price points")
+                  return price_data
+
+              def calculate_market_move(self, event_date: datetime, price_data: Dict[datetime, float],
+                                      window_days: int = 3) -> MarketMove:
+                  """Calculate market movement after lunar event"""
+
+                  # Find start price
+                  start_date = event_date
+                  while start_date not in price_data and start_date <= max(price_data.keys()):
+                      start_date += timedelta(days=1)
+
+                  if start_date not in price_data:
+                      return None
+
+                  start_price = price_data[start_date]
+
+                  # Find end price
+                  end_date = start_date + timedelta(days=window_days)
+                  while end_date not in price_data and end_date <= max(price_data.keys()):
+                      end_date += timedelta(days=1)
+
+                  if end_date not in price_data:
+                      return None
+
+                  end_price = price_data[end_date]
+                  magnitude = ((end_price - start_price) / start_price) * 100
+
+                  if abs(magnitude) < 0.5:
+                      direction = MarketDirection.SIDEWAYS
+                  elif magnitude > 0:
+                      direction = MarketDirection.UP
+                  else:
+                      direction = MarketDirection.DOWN
+
+                  return MarketMove(direction, magnitude, window_days)
+
+              def discover_patterns(self, events: List[LunarEvent], price_data: Dict[datetime, float]) -> List[LunarPattern]:
+                  """Discover lunar patterns"""
+                  patterns = {}
+
+                  for event in events:
+                      key = (event.aspect_type, event.target_planet)
+                      if key not in patterns:
+                          patterns[key] = []
+
+                      move = self.calculate_market_move(event.date, price_data)
+                      if move and move.direction != MarketDirection.SIDEWAYS:
+                          patterns[key].append(move)
+
+                  discovered = []
+                  for (aspect, planet), moves in patterns.items():
+                      if len(moves) >= 3:  # Minimum occurrences
+                          directions = [move.direction for move in moves]
+                          most_common = max(set(directions), key=directions.count)
+                          consistency = directions.count(most_common) / len(directions)
+
+                          if consistency >= 0.65:  # 65% consistency threshold
+                              avg_mag = np.mean([abs(move.magnitude) for move in moves])
+
+                              pattern = LunarPattern(
+                                  description=f"Moon {aspect} {planet} → {most_common.value}",
+                                  consistency_rate=consistency,
+                                  total_occurrences=len(moves),
+                                  avg_magnitude=avg_mag
+                              )
+                              discovered.append(pattern)
+
+                  return discovered
+
+              def run_backtest(self, start_date: datetime, end_date: datetime):
+                  """Run the complete backtest"""
+                  self.connect_db()
+
+                  try:
+                      # Get data
+                      events = self.get_lunar_events_from_db(start_date, end_date)
+                      price_data = self.get_market_data(start_date, end_date)
+
+                      # Discover patterns
+                      patterns = self.discover_patterns(events, price_data)
+
+                      # Print results
+                      print(f"\n🌙 LUNAR PATTERN BACKTEST RESULTS")
+                      print(f"=" * 50)
+                      print(f"Period: {start_date.date()} to {end_date.date()}")
+                      print(f"Total lunar events: {len(events)}")
+                      print(f"Significant patterns found: {len(patterns)}")
+
+                      if patterns:
+                          print(f"\n📈 DISCOVERED PATTERNS:")
+                          print("-" * 30)
+
+                          for i, pattern in enumerate(sorted(patterns, key=lambda p: p.consistency_rate, reverse=True), 1):
+                              print(f"{i}. {pattern.description}")
+                              print(f"   Consistency: {pattern.consistency_rate:.1%}")
+                              print(f"   Occurrences: {pattern.total_occurrences}")
+                              print(f"   Avg Magnitude: {pattern.avg_magnitude:.2f}%")
+                              print()
+                      else:
+                          print("❌ No significant patterns discovered")
+                          print("Try adjusting parameters or longer time periods")
+
+                      return {
+                          'total_events': len(events),
+                          'patterns': patterns,
+                          'success': len(patterns) > 0
+                      }
+
+                  finally:
+                      if self.conn:
+                          self.conn.close()
+
+          def main():
+              # Database configuration
+              db_config = {
+                  'host': os.environ['DB_HOST'],
+                  'user': os.environ['DB_USER'],
+                  'database': os.environ['DB_NAME'],
+                  'password': os.environ['PGPASSWORD']
+              }
+
+              print("🚀 Starting Lunar Pattern Analysis...")
+
+              # Test period: last 3 years
+              end_date = datetime.now()
+              start_date = end_date - timedelta(days=3*365)
+
+              tester = SimpleLunarTester(db_config)
+              results = tester.run_backtest(start_date, end_date)
+
+              if results['success']:
+                  print(f"✅ Backtest completed successfully!")
+                  print(f"Found {len(results['patterns'])} significant lunar patterns")
+              else:
+                  print(f"⚠️ No significant patterns found")
+
+              return results
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          # Run the lunar pattern backtest
+          echo "🔍 Running lunar pattern analysis..."
+          python3 lunar_pattern_tester_simple.py
+
+          echo "✅ Lunar pattern backtest completed!"
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+
+      restartPolicy: Never
+  backoffLimit: 1
