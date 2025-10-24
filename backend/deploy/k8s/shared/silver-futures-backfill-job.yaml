@@ -1,0 +1,263 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: silver-futures-backfill-50years
+  namespace: time-series-indexing
+spec:
+  template:
+    spec:
+      containers:
+      - name: silver-backfill
+        image: python:3.11-slim
+        command: ["/bin/bash"]
+        args:
+          - -c
+          - |
+            echo "🥈📊 Silver Futures 50-Year Historical Data Backfill"
+
+            # Install dependencies
+            apt-get update && apt-get install -y \
+              python3 \
+              python3-pip \
+              libpq-dev \
+              gcc \
+              && rm -rf /var/lib/apt/lists/*
+
+            # Install Python dependencies
+            pip3 install --no-cache-dir psycopg2-binary==2.9.11 yfinance==0.2.18 pandas
+
+            # Create the silver futures backfill script
+            cat > silver_futures_backfill.py << 'EOF'
+            import yfinance as yf
+            import psycopg2
+            import os
+            from datetime import datetime, timedelta
+            import pandas as pd
+            import logging
+
+            logging.basicConfig(level=logging.INFO)
+            logger = logging.getLogger(__name__)
+
+            def get_db_connection():
+                """Create database connection"""
+                return psycopg2.connect(
+                    host=os.environ.get('DB_HOST'),
+                    database=os.environ.get('DB_NAME'),
+                    user=os.environ.get('DB_USER'),
+                    password=os.environ.get('DB_PASSWORD'),
+                    port=os.environ.get('DB_PORT', '5432')
+                )
+
+            def ensure_table_exists(conn):
+                """Ensure market_data_intraday table exists with proper schema"""
+                cursor = conn.cursor()
+
+                # Create table if it doesn't exist
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS market_data_intraday (
+                        id SERIAL PRIMARY KEY,
+                        symbol VARCHAR(50) NOT NULL,
+                        datetime TIMESTAMP WITH TIME ZONE NOT NULL,
+                        open_price DECIMAL(15,6),
+                        high_price DECIMAL(15,6),
+                        low_price DECIMAL(15,6),
+                        close_price DECIMAL(15,6),
+                        volume BIGINT,
+                        interval_type VARCHAR(10) NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        UNIQUE(symbol, datetime, interval_type)
+                    );
+                """)
+
+                # Create index for faster queries
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_market_data_symbol_datetime
+                    ON market_data_intraday (symbol, datetime);
+                """)
+
+                conn.commit()
+                cursor.close()
+                logger.info("✅ Table market_data_intraday ready")
+
+            def backfill_silver_data():
+                """Backfill 50 years of silver futures data"""
+                logger.info("🥈 Starting silver futures data backfill for 50 years")
+
+                # Connect to database
+                conn = get_db_connection()
+                ensure_table_exists(conn)
+
+                # Silver futures symbol
+                symbol = "SI=F"  # Silver continuous futures
+
+                try:
+                    # Calculate 50 years back from today
+                    end_date = datetime.now()
+                    start_date = end_date - timedelta(days=365 * 50)  # 50 years
+
+                    logger.info(f"📅 Fetching silver futures data from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+
+                    # Fetch daily data first (most reliable)
+                    ticker = yf.Ticker(symbol)
+
+                    # Get daily data for the full 50-year period
+                    logger.info("📊 Fetching daily data...")
+                    daily_data = ticker.history(
+                        start=start_date.strftime('%Y-%m-%d'),
+                        end=end_date.strftime('%Y-%m-%d'),
+                        interval='1d'
+                    )
+
+                    if daily_data.empty:
+                        logger.error("❌ No daily data retrieved for silver futures")
+                        return
+
+                    logger.info(f"✅ Retrieved {len(daily_data)} daily records")
+
+                    # Store daily data
+                    cursor = conn.cursor()
+                    daily_count = 0
+
+                    for index, row in daily_data.iterrows():
+                        try:
+                            cursor.execute("""
+                                INSERT INTO market_data_intraday
+                                (symbol, datetime, open_price, high_price, low_price, close_price, volume, interval_type)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                ON CONFLICT (symbol, datetime, interval_type) DO NOTHING
+                            """, (
+                                'SILVER_FUTURES',
+                                index,
+                                float(row['Open']) if pd.notna(row['Open']) else None,
+                                float(row['High']) if pd.notna(row['High']) else None,
+                                float(row['Low']) if pd.notna(row['Low']) else None,
+                                float(row['Close']) if pd.notna(row['Close']) else None,
+                                int(row['Volume']) if pd.notna(row['Volume']) else None,
+                                '1d'
+                            ))
+                            daily_count += 1
+
+                            if daily_count % 1000 == 0:
+                                logger.info(f"📊 Stored {daily_count} daily records...")
+                                conn.commit()
+
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to store daily record for {index}: {e}")
+
+                    conn.commit()
+                    logger.info(f"✅ Stored {daily_count} daily silver futures records")
+
+                    # Now try to get more recent hourly data (last 2 years for better precision)
+                    recent_start = end_date - timedelta(days=730)  # 2 years
+                    logger.info(f"📊 Fetching recent hourly data from {recent_start.strftime('%Y-%m-%d')}...")
+
+                    try:
+                        hourly_data = ticker.history(
+                            start=recent_start.strftime('%Y-%m-%d'),
+                            end=end_date.strftime('%Y-%m-%d'),
+                            interval='1h'
+                        )
+
+                        if not hourly_data.empty:
+                            logger.info(f"✅ Retrieved {len(hourly_data)} hourly records")
+
+                            hourly_count = 0
+                            for index, row in hourly_data.iterrows():
+                                try:
+                                    cursor.execute("""
+                                        INSERT INTO market_data_intraday
+                                        (symbol, datetime, open_price, high_price, low_price, close_price, volume, interval_type)
+                                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                        ON CONFLICT (symbol, datetime, interval_type) DO NOTHING
+                                    """, (
+                                        'SILVER_FUTURES',
+                                        index,
+                                        float(row['Open']) if pd.notna(row['Open']) else None,
+                                        float(row['High']) if pd.notna(row['High']) else None,
+                                        float(row['Low']) if pd.notna(row['Low']) else None,
+                                        float(row['Close']) if pd.notna(row['Close']) else None,
+                                        int(row['Volume']) if pd.notna(row['Volume']) else None,
+                                        '1h'
+                                    ))
+                                    hourly_count += 1
+
+                                    if hourly_count % 500 == 0:
+                                        logger.info(f"📊 Stored {hourly_count} hourly records...")
+                                        conn.commit()
+
+                                except Exception as e:
+                                    logger.warning(f"⚠️ Failed to store hourly record for {index}: {e}")
+
+                            conn.commit()
+                            logger.info(f"✅ Stored {hourly_count} hourly silver futures records")
+                        else:
+                            logger.warning("⚠️ No hourly data available for recent period")
+
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to fetch hourly data: {e}")
+
+                    cursor.close()
+
+                    # Verify data
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT interval_type, COUNT(*), MIN(datetime), MAX(datetime)
+                        FROM market_data_intraday
+                        WHERE symbol = 'SILVER_FUTURES'
+                        GROUP BY interval_type
+                        ORDER BY interval_type
+                    """)
+
+                    results = cursor.fetchall()
+                    logger.info("🥈 Silver futures data summary:")
+                    for interval_type, count, min_date, max_date in results:
+                        logger.info(f"  {interval_type}: {count:,} records from {min_date} to {max_date}")
+
+                    cursor.close()
+                    logger.info("🎯 Silver futures backfill completed successfully!")
+
+                except Exception as e:
+                    logger.error(f"❌ Silver futures backfill failed: {e}")
+                    raise
+                finally:
+                    conn.close()
+
+            if __name__ == "__main__":
+                backfill_silver_data()
+            EOF
+
+            # Run the silver futures backfill
+            echo "🥈📊 Starting Silver Futures Historical Data Backfill..."
+            python3 silver_futures_backfill.py
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+      restartPolicy: Never
+  backoffLimit: 2

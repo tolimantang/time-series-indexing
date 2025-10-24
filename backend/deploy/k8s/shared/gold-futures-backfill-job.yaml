@@ -1,0 +1,306 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gold-futures-backfill-50years
+  namespace: time-series-indexing
+spec:
+  template:
+    spec:
+      containers:
+      - name: gold-backfill
+        image: python:3.11-slim
+        command: ["/bin/bash"]
+        args:
+          - -c
+          - |
+            echo "🥇📊 Gold Futures 50-Year Historical Data Backfill"
+
+            # Install dependencies
+            apt-get update && apt-get install -y \
+              python3 \
+              python3-pip \
+              libpq-dev \
+              gcc \
+              && rm -rf /var/lib/apt/lists/*
+
+            # Install Python dependencies
+            pip3 install --no-cache-dir psycopg2-binary==2.9.11 yfinance==0.2.18 pandas
+
+            # Create the gold futures backfill script
+            cat > gold_futures_backfill.py << 'EOF'
+            import yfinance as yf
+            import psycopg2
+            import os
+            from datetime import datetime, timedelta
+            import pandas as pd
+            import logging
+
+            logging.basicConfig(level=logging.INFO)
+            logger = logging.getLogger(__name__)
+
+            def get_db_connection():
+                """Create database connection"""
+                return psycopg2.connect(
+                    host=os.environ.get('DB_HOST'),
+                    database=os.environ.get('DB_NAME'),
+                    user=os.environ.get('DB_USER'),
+                    password=os.environ.get('DB_PASSWORD'),
+                    port=os.environ.get('DB_PORT', '5432')
+                )
+
+            def ensure_table_exists(conn):
+                """Ensure market_data_intraday table exists with proper schema"""
+                cursor = conn.cursor()
+
+                # Create table if it doesn't exist
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS market_data_intraday (
+                        id SERIAL PRIMARY KEY,
+                        symbol VARCHAR(50) NOT NULL,
+                        datetime TIMESTAMP WITH TIME ZONE NOT NULL,
+                        open_price DECIMAL(15,6),
+                        high_price DECIMAL(15,6),
+                        low_price DECIMAL(15,6),
+                        close_price DECIMAL(15,6),
+                        volume BIGINT,
+                        interval_type VARCHAR(10) NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        UNIQUE(symbol, datetime, interval_type)
+                    );
+                """)
+
+                # Create index for faster queries
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_market_data_symbol_datetime
+                    ON market_data_intraday (symbol, datetime);
+                """)
+
+                conn.commit()
+                cursor.close()
+                logger.info("✅ Table market_data_intraday ready")
+
+            def try_symbol(symbol, start_date, end_date):
+                """Try to fetch data for a specific symbol"""
+                logger.info(f"🔍 Trying symbol: {symbol}")
+                try:
+                    ticker = yf.Ticker(symbol)
+
+                    # Try daily data first
+                    daily_data = ticker.history(
+                        start=start_date.strftime('%Y-%m-%d'),
+                        end=end_date.strftime('%Y-%m-%d'),
+                        interval='1d'
+                    )
+
+                    if not daily_data.empty:
+                        logger.info(f"✅ Success with {symbol}: {len(daily_data)} daily records")
+                        return symbol, daily_data, 'daily'
+                    else:
+                        logger.warning(f"⚠️ No daily data for {symbol}")
+                        return None, None, None
+
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to fetch {symbol}: {e}")
+                    return None, None, None
+
+            def backfill_gold_data():
+                """Backfill gold futures data using multiple symbol attempts"""
+                logger.info("🥇 Starting gold futures data backfill with multiple symbols")
+
+                # Connect to database
+                conn = get_db_connection()
+                ensure_table_exists(conn)
+
+                # Multiple gold symbols to try (E*TRADE compatible, in order of preference)
+                gold_symbols = [
+                    "GC=F",     # Gold futures continuous contract (E*TRADE compatible)
+                    "GLD",      # SPDR Gold Shares ETF (most reliable)
+                    "IAU",      # iShares Gold Trust ETF
+                    "SGOL",     # Aberdeen Standard Physical Gold Shares ETF
+                    "OUNZ",     # VanEck Merk Gold Trust
+                ]
+
+                try:
+                    # Calculate date range (start with 50 years)
+                    end_date = datetime.now()
+                    start_date = end_date - timedelta(days=365 * 50)  # 50 years
+
+                    logger.info(f"📅 Fetching gold data from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+
+                    successful_symbol = None
+                    data = None
+                    data_type = None
+
+                    # Try each symbol until one works
+                    for symbol in gold_symbols:
+                        successful_symbol, data, data_type = try_symbol(symbol, start_date, end_date)
+                        if successful_symbol and data is not None:
+                            break
+
+                    if successful_symbol is None:
+                        logger.error("❌ No gold symbols worked. Trying alternative approach...")
+
+                        # Try even simpler approach with GLD and shorter timeframe
+                        simple_start = end_date - timedelta(days=365 * 5)  # Just 5 years
+                        logger.info(f"🔄 Trying GLD with shorter timeframe: {simple_start.strftime('%Y-%m-%d')}")
+
+                        try:
+                            ticker = yf.Ticker("GLD")
+                            data = ticker.history(start=simple_start, end=end_date, interval='1d')
+                            if not data.empty:
+                                successful_symbol = "GLD"
+                                data_type = 'daily'
+                                logger.info(f"✅ Success with GLD (short timeframe): {len(data)} records")
+                            else:
+                                logger.error("❌ Even GLD with short timeframe failed")
+                                return
+                        except Exception as e:
+                            logger.error(f"❌ Final attempt failed: {e}")
+                            return
+
+                    # Store the data
+                    cursor = conn.cursor()
+                    count = 0
+
+                    logger.info(f"💾 Storing {len(data)} {data_type} records for {successful_symbol}")
+
+                    for index, row in data.iterrows():
+                        try:
+                            cursor.execute("""
+                                INSERT INTO market_data_intraday
+                                (symbol, datetime, open_price, high_price, low_price, close_price, volume, interval_type)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                ON CONFLICT (symbol, datetime, interval_type) DO NOTHING
+                            """, (
+                                'GOLD_FUTURES',  # Standardize symbol name in database
+                                index,
+                                float(row['Open']) if pd.notna(row['Open']) else None,
+                                float(row['High']) if pd.notna(row['High']) else None,
+                                float(row['Low']) if pd.notna(row['Low']) else None,
+                                float(row['Close']) if pd.notna(row['Close']) else None,
+                                int(row['Volume']) if pd.notna(row['Volume']) else None,
+                                '1d'
+                            ))
+                            count += 1
+
+                            if count % 500 == 0:
+                                logger.info(f"📊 Stored {count} records...")
+                                conn.commit()
+
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to store record for {index}: {e}")
+
+                    conn.commit()
+                    cursor.close()
+
+                    logger.info(f"✅ Successfully stored {count} gold records from {successful_symbol}")
+
+                    # Try to get more recent hourly data if we have daily data
+                    if data_type == 'daily' and count > 0:
+                        logger.info("📊 Attempting to get recent hourly data...")
+                        try:
+                            recent_start = end_date - timedelta(days=60)  # Last 60 days
+                            ticker = yf.Ticker(successful_symbol)
+                            hourly_data = ticker.history(
+                                start=recent_start,
+                                end=end_date,
+                                interval='1h'
+                            )
+
+                            if not hourly_data.empty:
+                                logger.info(f"✅ Retrieved {len(hourly_data)} hourly records")
+
+                                cursor = conn.cursor()
+                                hourly_count = 0
+
+                                for index, row in hourly_data.iterrows():
+                                    try:
+                                        cursor.execute("""
+                                            INSERT INTO market_data_intraday
+                                            (symbol, datetime, open_price, high_price, low_price, close_price, volume, interval_type)
+                                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                            ON CONFLICT (symbol, datetime, interval_type) DO NOTHING
+                                        """, (
+                                            'GOLD_FUTURES',
+                                            index,
+                                            float(row['Open']) if pd.notna(row['Open']) else None,
+                                            float(row['High']) if pd.notna(row['High']) else None,
+                                            float(row['Low']) if pd.notna(row['Low']) else None,
+                                            float(row['Close']) if pd.notna(row['Close']) else None,
+                                            int(row['Volume']) if pd.notna(row['Volume']) else None,
+                                            '1h'
+                                        ))
+                                        hourly_count += 1
+                                    except Exception as e:
+                                        logger.warning(f"⚠️ Failed to store hourly record: {e}")
+
+                                conn.commit()
+                                cursor.close()
+                                logger.info(f"✅ Stored {hourly_count} hourly gold records")
+
+                        except Exception as e:
+                            logger.warning(f"⚠️ Hourly data fetch failed: {e}")
+
+                    # Verify final data
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT interval_type, COUNT(*), MIN(datetime), MAX(datetime)
+                        FROM market_data_intraday
+                        WHERE symbol = 'GOLD_FUTURES'
+                        GROUP BY interval_type
+                        ORDER BY interval_type
+                    """)
+
+                    results = cursor.fetchall()
+                    logger.info("🥇 Final gold futures data summary:")
+                    for interval_type, count, min_date, max_date in results:
+                        logger.info(f"  {interval_type}: {count:,} records from {min_date} to {max_date}")
+
+                    cursor.close()
+                    logger.info("🎯 Gold futures backfill completed successfully!")
+
+                except Exception as e:
+                    logger.error(f"❌ Gold futures backfill failed: {e}")
+                    raise
+                finally:
+                    conn.close()
+
+            if __name__ == "__main__":
+                backfill_gold_data()
+            EOF
+
+            # Run the gold futures backfill
+            echo "🥇📊 Starting Gold Futures Historical Data Backfill..."
+            python3 gold_futures_backfill.py
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+      restartPolicy: Never
+  backoffLimit: 2
