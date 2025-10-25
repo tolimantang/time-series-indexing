@@ -425,35 +425,40 @@ async def execute_real_backtest(request_id: str, request: BacktestRequest):
             if request.min_occurrences:
                 tester.MIN_OCCURRENCES = request.min_occurrences
 
-            # Get patterns count before analysis
-            cursor = tester.conn.cursor()
-            cursor.execute("""
+            # Get patterns count before analysis (use separate connection)
+            conn_before = get_db_connection()
+            cursor_before = conn_before.cursor()
+            cursor_before.execute("""
                 SELECT COUNT(*) FROM lunar_patterns
                 WHERE market_symbol = %s AND timing_type = %s
             """, (f"{request.market_name}_DAILY", timing_type))
-            patterns_before = cursor.fetchone()[0]
+            patterns_before = cursor_before.fetchone()[0]
+            cursor_before.close()
+            conn_before.close()
 
             # Run the REAL analysis
             tester.run_analysis(request.symbol, request.market_name)
 
-            # Get patterns count after analysis
-            cursor.execute("""
+            # Get patterns count after analysis (use separate connection)
+            conn_after = get_db_connection()
+            cursor_after = conn_after.cursor()
+            cursor_after.execute("""
                 SELECT COUNT(*) FROM lunar_patterns
                 WHERE market_symbol = %s AND timing_type = %s
             """, (f"{request.market_name}_DAILY", timing_type))
-            patterns_after = cursor.fetchone()[0]
+            patterns_after = cursor_after.fetchone()[0]
             new_patterns = patterns_after - patterns_before
 
             total_patterns_found += new_patterns
 
             # Get best pattern for this timing type
-            cursor.execute("""
+            cursor_after.execute("""
                 SELECT pattern_name, accuracy_rate
                 FROM lunar_patterns
                 WHERE market_symbol = %s AND timing_type = %s
                 ORDER BY accuracy_rate DESC LIMIT 1
             """, (f"{request.market_name}_DAILY", timing_type))
-            result = cursor.fetchone()
+            result = cursor_after.fetchone()
 
             if result and result[1] > best_accuracy:
                 best_accuracy = result[1]
@@ -462,9 +467,9 @@ async def execute_real_backtest(request_id: str, request: BacktestRequest):
                     "accuracy": float(result[1]),
                     "timing_type": timing_type
                 }
+            cursor_after.close()
+            conn_after.close()
 
-            cursor.close()
-            tester.conn.close()
 
             logger.info(f"✅ Completed {timing_type} analysis: {new_patterns} new patterns found")
 

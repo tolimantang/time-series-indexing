@@ -3,7 +3,11 @@ Main AstroEncoder class for astronomical data encoding.
 Adapted for financial market correlation analysis.
 """
 
-import swisseph as swe
+try:
+    import swisseph as swe
+except ImportError:
+    # Fallback for when Swiss Ephemeris is not available
+    swe = None
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 import logging
@@ -64,10 +68,14 @@ class AstroEncoder:
         Args:
             ephemeris_path: Path to Swiss Ephemeris data files
         """
+        if swe is None:
+            logger.warning("Swiss Ephemeris not available - astronomical calculations will be limited")
+            return
+
         if ephemeris_path:
             swe.set_ephe_path(ephemeris_path)
 
-        logger.info("AstroEncoder initialized")
+        logger.info("AstroEncoder initialized successfully")
 
     def encode_date(
         self,
@@ -86,6 +94,10 @@ class AstroEncoder:
         Returns:
             Complete astronomical data for the date
         """
+        if swe is None:
+            logger.warning("Swiss Ephemeris not available - returning None")
+            return None
+
         try:
             # Convert to Julian day
             julian_day = swe.julday(date.year, date.month, date.day, date.hour + date.minute/60.0)
