@@ -104,26 +104,18 @@ class EnhancedDailyLunarTester:
 
         cursor = self.conn.cursor()
 
-        # Get daily data by getting the last close price of each day
+        # Get daily data from market_data table (not intraday)
         query = """
-        WITH daily_closes AS (
-            SELECT
-                DATE(datetime) as trade_date,
-                close_price,
-                ROW_NUMBER() OVER (PARTITION BY DATE(datetime) ORDER BY datetime DESC) as rn
-            FROM market_data_intraday
-            WHERE symbol = %s
-            AND datetime BETWEEN %s AND %s
-            AND interval_type = '1h'
-        )
         SELECT trade_date, close_price
-        FROM daily_closes
-        WHERE rn = 1
+        FROM market_data
+        WHERE symbol = %s
+        AND trade_date BETWEEN %s AND %s
         ORDER BY trade_date
         """
 
-        start_date = '2023-11-27'
-        end_date = '2024-10-24'
+        # Use broader date range to include our 30-year gold futures dataset
+        start_date = '1994-01-01'
+        end_date = '2025-12-31'
 
         cursor.execute(query, (symbol, start_date, end_date))
         results = cursor.fetchall()
