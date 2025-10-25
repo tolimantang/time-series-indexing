@@ -1,0 +1,429 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: platinum-moon-pluto-aquarius
+  namespace: time-series-indexing
+spec:
+  template:
+    spec:
+      containers:
+      - name: platinum-moon-pluto-analysis
+        image: python:3.11-slim
+        command: ["/bin/bash"]
+        args:
+          - -c
+          - |
+            echo "🌙📈 Platinum Moon Conjunct Pluto in Aquarius Analysis"
+
+            # Install dependencies
+            apt-get update && apt-get install -y \
+              python3 \
+              python3-pip \
+              libpq-dev \
+              gcc \
+              && rm -rf /var/lib/apt/lists/*
+
+            # Install Python dependencies
+            pip3 install --no-cache-dir psycopg2-binary==2.9.11
+
+            # Create the platinum moon-pluto analysis script
+            cat > platinum_moon_pluto_analysis.py << 'EOF'
+            #!/usr/bin/env python3
+            """
+            Platinum Moon Conjunct Pluto in Aquarius Analysis
+
+            Specifically tests the enhanced positional patterns where:
+            - Moon aspects Pluto
+            - Pluto is in Aquarius
+            - Target patterns: "Moon conjunction Pluto in Aquarius"
+            """
+
+            import os
+            import psycopg2
+            from datetime import datetime, timedelta
+            from typing import Dict, List, Any, Optional, Tuple
+            import logging
+
+            logging.basicConfig(level=logging.INFO)
+            logger = logging.getLogger(__name__)
+
+            class PlatinumMoonPlutoAnalyzer:
+                def __init__(self):
+                    # PostgreSQL connection using environment variables from secrets
+                    self.conn = psycopg2.connect(
+                        host=os.environ.get('DB_HOST'),
+                        database=os.environ.get('DB_NAME'),
+                        user=os.environ.get('DB_USER'),
+                        password=os.environ.get('DB_PASSWORD'),
+                        port=os.environ.get('DB_PORT', '5432')
+                    )
+
+                    # More lenient thresholds for this specific analysis
+                    self.ACCURACY_THRESHOLD = 0.60  # 60% accuracy
+                    self.MIN_OCCURRENCES = 3       # 3 minimum occurrences
+
+                def get_available_symbols(self):
+                    """Check what platinum symbols are available"""
+                    cursor = self.conn.cursor()
+                    cursor.execute("""
+                        SELECT DISTINCT symbol
+                        FROM market_data_intraday
+                        WHERE symbol LIKE '%PLATINUM%' OR symbol LIKE '%PL%'
+                        ORDER BY symbol
+                    """)
+                    symbols = [row[0] for row in cursor.fetchall()]
+                    cursor.close()
+                    logger.info(f"Available platinum symbols: {symbols}")
+                    return symbols
+
+                def get_moon_pluto_aspects_in_aquarius(self) -> List[Dict]:
+                    """Get all dates when Moon aspects Pluto and Pluto is in Aquarius"""
+                    cursor = self.conn.cursor()
+
+                    query = """
+                    SELECT DISTINCT
+                        a.trade_date,
+                        a.aspect_type,
+                        a.orb,
+                        p_moon.zodiac_sign as moon_sign,
+                        p_pluto.zodiac_sign as pluto_sign,
+                        p_pluto.degree_in_sign as pluto_degree
+                    FROM daily_planetary_aspects a
+                    JOIN daily_planetary_positions p_moon ON p_moon.planet = 'Moon' AND p_moon.trade_date = a.trade_date
+                    JOIN daily_planetary_positions p_pluto ON p_pluto.planet = 'Pluto' AND p_pluto.trade_date = a.trade_date
+                    WHERE a.planet1 = 'Moon'
+                      AND a.planet2 = 'Pluto'
+                      AND p_pluto.zodiac_sign = 'Aquarius'
+                      AND a.orb <= 8.0
+                      AND a.trade_date >= '2023-01-01'
+                    ORDER BY a.trade_date
+                    """
+
+                    cursor.execute(query)
+                    results = cursor.fetchall()
+                    cursor.close()
+
+                    aspects = []
+                    for trade_date, aspect_type, orb, moon_sign, pluto_sign, pluto_degree in results:
+                        aspects.append({
+                            'trade_date': trade_date,
+                            'aspect_type': aspect_type,
+                            'orb': float(orb),
+                            'moon_sign': moon_sign,
+                            'pluto_sign': pluto_sign,
+                            'pluto_degree': float(pluto_degree)
+                        })
+
+                    logger.info(f"Found {len(aspects)} Moon-Pluto aspects with Pluto in Aquarius")
+                    return aspects
+
+                def get_price_data(self, symbol: str) -> Dict:
+                    """Get price data for the given symbol"""
+                    cursor = self.conn.cursor()
+
+                    # Try to get daily data from intraday table
+                    query = """
+                    WITH daily_closes AS (
+                        SELECT
+                            DATE(datetime) as trade_date,
+                            close_price,
+                            ROW_NUMBER() OVER (PARTITION BY DATE(datetime) ORDER BY datetime DESC) as rn
+                        FROM market_data_intraday
+                        WHERE symbol = %s
+                        AND datetime >= '2023-01-01'
+                        AND interval_type = '1h'
+                    )
+                    SELECT trade_date, close_price
+                    FROM daily_closes
+                    WHERE rn = 1
+                    ORDER BY trade_date
+                    """
+
+                    cursor.execute(query, (symbol,))
+                    results = cursor.fetchall()
+
+                    if not results:
+                        # Try regular market_data table
+                        cursor.execute("""
+                            SELECT trade_date, close_price
+                            FROM market_data
+                            WHERE symbol = %s
+                            AND trade_date >= '2023-01-01'
+                            ORDER BY trade_date
+                        """, (symbol,))
+                        results = cursor.fetchall()
+
+                    cursor.close()
+
+                    # Convert to dictionary for easy lookup
+                    price_dict = {}
+                    for trade_date, close_price in results:
+                        price_dict[trade_date] = float(close_price)
+
+                    logger.info(f"Retrieved {len(price_dict)} price points for {symbol}")
+                    return price_dict
+
+                def analyze_patterns(self, symbol: str):
+                    """Analyze Moon-Pluto in Aquarius patterns for price movements"""
+                    logger.info(f"🎯 Analyzing Moon-Pluto in Aquarius patterns for {symbol}")
+
+                    # Get Moon-Pluto aspects when Pluto is in Aquarius
+                    aspects = self.get_moon_pluto_aspects_in_aquarius()
+
+                    if not aspects:
+                        logger.error("No Moon-Pluto aspects found with Pluto in Aquarius")
+                        return []
+
+                    # Get price data
+                    prices = self.get_price_data(symbol)
+
+                    if not prices:
+                        logger.error(f"No price data found for {symbol}")
+                        return []
+
+                    # Analyze each aspect for price movement
+                    patterns = {}
+
+                    for aspect_data in aspects:
+                        trade_date = aspect_data['trade_date']
+                        aspect_type = aspect_data['aspect_type']
+                        moon_sign = aspect_data['moon_sign']
+
+                        # Check if we have price data for this date and next day
+                        next_date = trade_date + timedelta(days=1)
+
+                        # Skip weekends
+                        while next_date.weekday() >= 5:
+                            next_date += timedelta(days=1)
+
+                        if trade_date not in prices or next_date not in prices:
+                            continue
+
+                        current_price = prices[trade_date]
+                        next_price = prices[next_date]
+
+                        # Calculate price movement
+                        price_change = ((next_price - current_price) / current_price) * 100
+                        direction = 'up' if price_change > 0.1 else 'down' if price_change < -0.1 else 'flat'
+
+                        if direction == 'flat':
+                            continue
+
+                        # Create pattern keys
+                        patterns_to_track = [
+                            f"Moon {aspect_type} Pluto in Aquarius",
+                            f"Moon in {moon_sign} {aspect_type} Pluto in Aquarius"
+                        ]
+
+                        for pattern_name in patterns_to_track:
+                            if pattern_name not in patterns:
+                                patterns[pattern_name] = {
+                                    'up': 0, 'down': 0, 'up_moves': [], 'down_moves': [],
+                                    'dates': [], 'aspect_type': aspect_type, 'moon_sign': moon_sign,
+                                    'target_planet': 'Pluto', 'target_sign': 'Aquarius'
+                                }
+
+                            patterns[pattern_name][direction] += 1
+                            patterns[pattern_name]['dates'].append({
+                                'date': trade_date,
+                                'direction': direction,
+                                'change': price_change,
+                                'orb': aspect_data['orb']
+                            })
+
+                            if direction == 'up':
+                                patterns[pattern_name]['up_moves'].append(price_change)
+                            else:
+                                patterns[pattern_name]['down_moves'].append(price_change)
+
+                    # Filter and evaluate patterns
+                    valid_patterns = []
+
+                    for pattern_name, data in patterns.items():
+                        total = data['up'] + data['down']
+
+                        if total >= self.MIN_OCCURRENCES:
+                            up_accuracy = data['up'] / total
+                            down_accuracy = data['down'] / total
+
+                            # Calculate averages
+                            avg_up_move = sum(data['up_moves']) / len(data['up_moves']) if data['up_moves'] else 0.0
+                            avg_down_move = sum(data['down_moves']) / len(data['down_moves']) if data['down_moves'] else 0.0
+
+                            # Determine prediction based on which direction is more frequent
+                            if up_accuracy > down_accuracy and up_accuracy >= self.ACCURACY_THRESHOLD:
+                                prediction = 'up'
+                                accuracy = up_accuracy
+                                expected_return = up_accuracy * avg_up_move
+                            elif down_accuracy > up_accuracy and down_accuracy >= self.ACCURACY_THRESHOLD:
+                                prediction = 'down'
+                                accuracy = down_accuracy
+                                expected_return = down_accuracy * abs(avg_down_move)
+                            elif up_accuracy > down_accuracy:  # Even if below threshold, still record
+                                prediction = 'up'
+                                accuracy = up_accuracy
+                                expected_return = up_accuracy * avg_up_move
+                            else:
+                                prediction = 'down'
+                                accuracy = down_accuracy
+                                expected_return = down_accuracy * abs(avg_down_move)
+
+                            valid_patterns.append({
+                                'pattern': pattern_name,
+                                'predicted_direction': prediction,
+                                'accuracy': accuracy,
+                                'occurrences': total,
+                                'up_count': data['up'],
+                                'down_count': data['down'],
+                                'avg_up_move': avg_up_move,
+                                'avg_down_move': avg_down_move,
+                                'expected_return': expected_return,
+                                'moon_sign': data['moon_sign'],
+                                'aspect_type': data['aspect_type'],
+                                'target_planet': data['target_planet'],
+                                'target_sign': data['target_sign'],
+                                'dates': data['dates'][:5]  # Show first 5 occurrences
+                            })
+
+                    return valid_patterns
+
+                def store_patterns(self, patterns: List[Dict], symbol: str):
+                    """Store patterns in lunar_patterns table"""
+                    if not patterns:
+                        logger.info("No patterns to store")
+                        return
+
+                    logger.info(f"💾 Storing {len(patterns)} Moon-Pluto patterns for {symbol}")
+
+                    cursor = self.conn.cursor()
+
+                    for pattern in patterns:
+                        cursor.execute("""
+                            INSERT INTO lunar_patterns
+                            (pattern_name, pattern_type, prediction, accuracy_rate,
+                             total_occurrences, up_count, down_count, avg_up_move, avg_down_move, expected_return,
+                             aspect_type, moon_sign, target_planet, target_sign,
+                             market_symbol, created_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (pattern_name, market_symbol)
+                            DO UPDATE SET
+                                accuracy_rate = EXCLUDED.accuracy_rate,
+                                total_occurrences = EXCLUDED.total_occurrences,
+                                up_count = EXCLUDED.up_count,
+                                down_count = EXCLUDED.down_count,
+                                avg_up_move = EXCLUDED.avg_up_move,
+                                avg_down_move = EXCLUDED.avg_down_move,
+                                expected_return = EXCLUDED.expected_return,
+                                created_at = EXCLUDED.created_at
+                        """, (
+                            pattern['pattern'],
+                            'enhanced_daily_lunar_transit',
+                            pattern['predicted_direction'],
+                            round(pattern['accuracy'], 3),
+                            pattern['occurrences'],
+                            pattern['up_count'],
+                            pattern['down_count'],
+                            round(pattern['avg_up_move'], 4),
+                            round(pattern['avg_down_move'], 4),
+                            round(pattern['expected_return'], 4),
+                            pattern['aspect_type'],
+                            pattern['moon_sign'],
+                            pattern['target_planet'],
+                            pattern['target_sign'],
+                            symbol,
+                            datetime.now()
+                        ))
+
+                    self.conn.commit()
+                    cursor.close()
+                    logger.info(f"✅ Successfully stored {len(patterns)} patterns")
+
+                def run_analysis(self):
+                    """Run the complete analysis"""
+                    logger.info("🚀 Starting Platinum Moon-Pluto in Aquarius Analysis")
+
+                    try:
+                        # Check available symbols
+                        symbols = self.get_available_symbols()
+
+                        # Try PLATINUM_FUTURES first, then other platinum symbols
+                        platinum_symbols = ['PLATINUM_FUTURES', 'PLATINUM_DAILY', 'PL=F'] + symbols
+
+                        patterns_found = False
+                        for symbol in platinum_symbols:
+                            if symbol in symbols or symbol in ['PLATINUM_FUTURES', 'PLATINUM_DAILY']:
+                                logger.info(f"Analyzing {symbol}...")
+                                patterns = self.analyze_patterns(symbol)
+
+                                if patterns:
+                                    patterns_found = True
+                                    # Store results
+                                    self.store_patterns(patterns, symbol)
+
+                                    # Display results
+                                    logger.info(f"🏆 Moon-Pluto in Aquarius Patterns for {symbol}:")
+                                    for i, pattern in enumerate(patterns, 1):
+                                        logger.info(f"{i}. {pattern['pattern']}")
+                                        logger.info(f"   → {pattern['predicted_direction'].upper()} prediction")
+                                        logger.info(f"   → {pattern['accuracy']:.1%} accuracy ({pattern['up_count']} up, {pattern['down_count']} down)")
+                                        logger.info(f"   → Avg moves: +{pattern['avg_up_move']:.2f}% / {pattern['avg_down_move']:.2f}%")
+                                        logger.info(f"   → Expected return: {pattern['expected_return']:.2f}%")
+                                        logger.info(f"   → Sample dates: {[d['date'].strftime('%Y-%m-%d') for d in pattern['dates'][:3]]}")
+                                        logger.info("")
+
+                                    break
+
+                        if not patterns_found:
+                            logger.warning("No Moon-Pluto in Aquarius patterns found for any platinum symbol")
+
+                        logger.info("🎯 Analysis completed!")
+
+                    except Exception as e:
+                        logger.error(f"Analysis failed: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        raise
+                    finally:
+                        if self.conn:
+                            self.conn.close()
+
+            if __name__ == "__main__":
+                analyzer = PlatinumMoonPlutoAnalyzer()
+                analyzer.run_analysis()
+            EOF
+
+            # Run the analysis
+            echo "🌙📈 Starting Platinum Moon-Pluto in Aquarius Analysis..."
+            python3 platinum_moon_pluto_analysis.py
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+        resources:
+          requests:
+            memory: "500Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+      restartPolicy: Never
+  backoffLimit: 2

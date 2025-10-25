@@ -1,0 +1,492 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: enhanced-daily-lunar-silver-timing
+  namespace: time-series-indexing
+spec:
+  template:
+    spec:
+      containers:
+      - name: enhanced-daily-lunar-tester
+        image: python:3.11-slim
+        command: ["/bin/bash"]
+        args:
+          - -c
+          - |
+            echo "🌙🥈⏰ Enhanced Daily Lunar Backtesting with Timing Analysis (Silver Futures)"
+
+            # Install dependencies
+            apt-get update && apt-get install -y \
+              python3 \
+              python3-pip \
+              libpq-dev \
+              gcc \
+              && rm -rf /var/lib/apt/lists/*
+
+            # Install Python dependencies
+            pip3 install --no-cache-dir psycopg2-binary==2.9.11 yfinance==0.2.18
+
+            # Create the enhanced daily lunar tester with timing analysis
+            cat > enhanced_daily_lunar_silver_timing.py << 'EOF'
+            import os
+            import psycopg2
+            import yfinance as yf
+            from datetime import datetime, timedelta
+            from typing import Dict, List, Any, Optional, Tuple
+            import logging
+
+            logging.basicConfig(level=logging.INFO)
+            logger = logging.getLogger(__name__)
+
+            class EnhancedDailyLunarSilverTimingTester:
+                def __init__(self):
+                    # PostgreSQL connection using environment variables from secrets
+                    self.conn = psycopg2.connect(
+                        host=os.environ.get('DB_HOST'),
+                        database=os.environ.get('DB_NAME'),
+                        user=os.environ.get('DB_USER'),
+                        password=os.environ.get('DB_PASSWORD'),
+                        port=os.environ.get('DB_PORT', '5432')
+                    )
+
+                    # Balanced thresholds for daily analysis
+                    self.ACCURACY_THRESHOLD = 0.65  # 65% accuracy
+                    self.MIN_OCCURRENCES = 5       # 5 minimum occurrences
+
+                def get_enhanced_planetary_aspects(self, trade_date: datetime) -> List[Dict]:
+                    """Get all planetary aspects WITH the target planet's sign position"""
+                    cursor = self.conn.cursor()
+
+                    # Get aspects AND the target planet positions
+                    query = """
+                    SELECT
+                        a.planet1,
+                        a.planet2,
+                        a.aspect_type,
+                        a.orb,
+                        a.separating_angle,
+                        p.zodiac_sign as target_planet_sign,
+                        p.degree_in_sign as target_planet_degree
+                    FROM daily_planetary_aspects a
+                    JOIN daily_planetary_positions p ON p.planet = a.planet2 AND p.trade_date = a.trade_date
+                    WHERE a.trade_date = %s
+                      AND a.planet1 = 'Moon'
+                      AND a.orb <= 8.0
+                    ORDER BY a.orb
+                    """
+
+                    cursor.execute(query, (trade_date.date(),))
+                    results = cursor.fetchall()
+                    cursor.close()
+
+                    aspects = []
+                    for planet1, planet2, aspect_type, orb, separating_angle, target_sign, target_degree in results:
+                        aspects.append({
+                            'planet': planet2,
+                            'aspect': aspect_type,
+                            'orb': float(orb),
+                            'target_sign': target_sign,
+                            'target_degree': float(target_degree)
+                        })
+
+                    return aspects
+
+                def get_moon_position(self, trade_date: datetime) -> Optional[Dict]:
+                    """Get Moon position for a specific date"""
+                    cursor = self.conn.cursor()
+
+                    cursor.execute("""
+                        SELECT longitude, zodiac_sign, degree_in_sign
+                        FROM daily_planetary_positions
+                        WHERE planet = 'Moon'
+                        AND trade_date = %s
+                    """, (trade_date.date(),))
+
+                    result = cursor.fetchone()
+                    cursor.close()
+
+                    if result:
+                        longitude, zodiac_sign, degree_in_sign = result
+                        return {
+                            'longitude': float(longitude),
+                            'zodiac_sign': zodiac_sign,
+                            'degree_in_sign': float(degree_in_sign)
+                        }
+                    return None
+
+                def get_silver_daily_data(self) -> List[Tuple]:
+                    """Get silver daily data from our existing database"""
+                    logger.info(f"📊 Fetching silver daily data from database")
+
+                    cursor = self.conn.cursor()
+
+                    # Get daily silver data from our database (stored directly as daily data)
+                    query = """
+                    SELECT trade_date, close_price
+                    FROM market_data
+                    WHERE symbol = 'SILVER_FUTURES'
+                    AND trade_date BETWEEN %s AND %s
+                    ORDER BY trade_date
+                    """
+
+                    start_date = '2020-09-25'  # Based on our silver data range
+                    end_date = '2025-10-24'
+
+                    cursor.execute(query, (start_date, end_date))
+                    results = cursor.fetchall()
+                    cursor.close()
+
+                    if not results:
+                        logger.error(f"No silver data found in database for SILVER_FUTURES")
+                        return []
+
+                    # Convert to list of tuples (datetime, close_price)
+                    price_data = []
+                    for trade_date, close_price in results:
+                        # Convert date to datetime for consistency
+                        dt = datetime.combine(trade_date, datetime.min.time())
+                        price_data.append((dt, float(close_price)))
+
+                    logger.info(f"✅ Successfully retrieved {len(price_data)} daily price points from database")
+                    return price_data
+
+                def analyze_enhanced_timing_patterns(self, symbol: str = 'SI=F') -> List[Dict]:
+                    """Analyze enhanced daily lunar patterns with both same-day and next-day timing"""
+                    logger.info(f"🎯 Analyzing ENHANCED timing lunar patterns for {symbol}")
+
+                    # Get daily silver price data from database
+                    price_data = self.get_silver_daily_data()
+
+                    if not price_data:
+                        logger.error(f"No daily price data found for {symbol}")
+                        return []
+
+                    logger.info(f"📊 Processing {len(price_data)} daily price points for enhanced timing analysis")
+                    patterns = {}
+                    processed_count = 0
+                    pattern_hits = 0
+
+                    for i in range(1, len(price_data) - 1):  # Need prev day and next day
+                        prev_date, prev_price = price_data[i - 1]
+                        current_date, current_price = price_data[i]
+                        next_date, next_price = price_data[i + 1]
+
+                        # Skip weekends (Saturday=5, Sunday=6)
+                        if current_date.weekday() >= 5:
+                            continue
+
+                        # Get Moon position for this date
+                        lunar_pos = self.get_moon_position(current_date)
+                        if not lunar_pos:
+                            continue
+
+                        # Get enhanced aspects with target planet signs
+                        aspects = self.get_enhanced_planetary_aspects(current_date)
+
+                        # Calculate same-day price movement (current vs previous)
+                        same_day_change = ((current_price - prev_price) / prev_price) * 100
+                        same_day_direction = 'up' if same_day_change > 0.1 else 'down' if same_day_change < -0.1 else 'flat'
+
+                        # Calculate next-day price movement (next vs current)
+                        next_day_change = ((next_price - current_price) / current_price) * 100
+                        next_day_direction = 'up' if next_day_change > 0.1 else 'down' if next_day_change < -0.1 else 'flat'
+
+                        # Skip if both movements are flat
+                        if same_day_direction == 'flat' and next_day_direction == 'flat':
+                            continue
+
+                        processed_count += 1
+
+                        # Create combined pattern descriptor
+                        combined_pattern = f"{same_day_direction}_then_{next_day_direction}"
+
+                        # BASIC PATTERNS WITH TIMING
+                        sign_pattern = f"Moon in {lunar_pos['zodiac_sign']}"
+                        if sign_pattern not in patterns:
+                            patterns[sign_pattern] = {
+                                'same_day': {'up': 0, 'down': 0, 'flat': 0},
+                                'next_day': {'up': 0, 'down': 0, 'flat': 0},
+                                'combined': {}
+                            }
+                        patterns[sign_pattern]['same_day'][same_day_direction] += 1
+                        patterns[sign_pattern]['next_day'][next_day_direction] += 1
+                        if combined_pattern not in patterns[sign_pattern]['combined']:
+                            patterns[sign_pattern]['combined'][combined_pattern] = 0
+                        patterns[sign_pattern]['combined'][combined_pattern] += 1
+                        pattern_hits += 1
+
+                        # ENHANCED POSITIONAL PATTERNS WITH TIMING
+                        for aspect in aspects:
+                            # Full context pattern with timing
+                            full_context_pattern = f"Moon in {lunar_pos['zodiac_sign']} {aspect['aspect']} {aspect['planet']} in {aspect['target_sign']}"
+                            if full_context_pattern not in patterns:
+                                patterns[full_context_pattern] = {
+                                    'same_day': {'up': 0, 'down': 0, 'flat': 0},
+                                    'next_day': {'up': 0, 'down': 0, 'flat': 0},
+                                    'combined': {}
+                                }
+                            patterns[full_context_pattern]['same_day'][same_day_direction] += 1
+                            patterns[full_context_pattern]['next_day'][next_day_direction] += 1
+                            if combined_pattern not in patterns[full_context_pattern]['combined']:
+                                patterns[full_context_pattern]['combined'][combined_pattern] = 0
+                            patterns[full_context_pattern]['combined'][combined_pattern] += 1
+                            pattern_hits += 1
+
+                        # Log progress every 50 processed points
+                        if processed_count % 50 == 0:
+                            logger.info(f"📊 Processed {processed_count} daily movements, recorded {pattern_hits} pattern occurrences")
+
+                    logger.info(f"📊 Final stats: {processed_count} daily movements, {pattern_hits} pattern occurrences")
+                    logger.info(f"📋 Raw patterns found: {len(patterns)}")
+
+                    # Filter and evaluate patterns
+                    valid_patterns = []
+
+                    for pattern_name, counts in patterns.items():
+                        # Analyze same-day patterns
+                        same_day_total = counts['same_day']['up'] + counts['same_day']['down']
+                        if same_day_total >= self.MIN_OCCURRENCES:
+                            same_day_up_accuracy = counts['same_day']['up'] / same_day_total if same_day_total > 0 else 0
+                            same_day_down_accuracy = counts['same_day']['down'] / same_day_total if same_day_total > 0 else 0
+
+                            if same_day_up_accuracy >= self.ACCURACY_THRESHOLD:
+                                valid_patterns.append({
+                                    'pattern': pattern_name,
+                                    'timing_type': 'same_day',
+                                    'predicted_direction': 'up',
+                                    'accuracy': same_day_up_accuracy,
+                                    'occurrences': same_day_total,
+                                    'up_count': counts['same_day']['up'],
+                                    'down_count': counts['same_day']['down'],
+                                    'same_day_direction': 'up',
+                                    'same_day_up_count': counts['same_day']['up'],
+                                    'same_day_down_count': counts['same_day']['down'],
+                                    'same_day_accuracy': same_day_up_accuracy,
+                                    'same_day_total_occurrences': same_day_total,
+                                    'combined_pattern': 'same_day_up'
+                                })
+                            elif same_day_down_accuracy >= self.ACCURACY_THRESHOLD:
+                                valid_patterns.append({
+                                    'pattern': pattern_name,
+                                    'timing_type': 'same_day',
+                                    'predicted_direction': 'down',
+                                    'accuracy': same_day_down_accuracy,
+                                    'occurrences': same_day_total,
+                                    'up_count': counts['same_day']['up'],
+                                    'down_count': counts['same_day']['down'],
+                                    'same_day_direction': 'down',
+                                    'same_day_up_count': counts['same_day']['up'],
+                                    'same_day_down_count': counts['same_day']['down'],
+                                    'same_day_accuracy': same_day_down_accuracy,
+                                    'same_day_total_occurrences': same_day_total,
+                                    'combined_pattern': 'same_day_down'
+                                })
+
+                        # Analyze next-day patterns
+                        next_day_total = counts['next_day']['up'] + counts['next_day']['down']
+                        if next_day_total >= self.MIN_OCCURRENCES:
+                            next_day_up_accuracy = counts['next_day']['up'] / next_day_total if next_day_total > 0 else 0
+                            next_day_down_accuracy = counts['next_day']['down'] / next_day_total if next_day_total > 0 else 0
+
+                            if next_day_up_accuracy >= self.ACCURACY_THRESHOLD:
+                                valid_patterns.append({
+                                    'pattern': pattern_name,
+                                    'timing_type': 'next_day',
+                                    'predicted_direction': 'up',
+                                    'accuracy': next_day_up_accuracy,
+                                    'occurrences': next_day_total,
+                                    'up_count': counts['next_day']['up'],
+                                    'down_count': counts['next_day']['down'],
+                                    'same_day_direction': None,
+                                    'same_day_up_count': 0,
+                                    'same_day_down_count': 0,
+                                    'same_day_accuracy': None,
+                                    'same_day_total_occurrences': 0,
+                                    'combined_pattern': 'next_day_up'
+                                })
+                            elif next_day_down_accuracy >= self.ACCURACY_THRESHOLD:
+                                valid_patterns.append({
+                                    'pattern': pattern_name,
+                                    'timing_type': 'next_day',
+                                    'predicted_direction': 'down',
+                                    'accuracy': next_day_down_accuracy,
+                                    'occurrences': next_day_total,
+                                    'up_count': counts['next_day']['up'],
+                                    'down_count': counts['next_day']['down'],
+                                    'same_day_direction': None,
+                                    'same_day_up_count': 0,
+                                    'same_day_down_count': 0,
+                                    'same_day_accuracy': None,
+                                    'same_day_total_occurrences': 0,
+                                    'combined_pattern': 'next_day_down'
+                                })
+
+                        # Analyze combined patterns (most interesting!)
+                        for combined_key, combined_count in counts['combined'].items():
+                            if combined_count >= self.MIN_OCCURRENCES:
+                                total_combined = sum(counts['combined'].values())
+                                combined_accuracy = combined_count / total_combined if total_combined > 0 else 0
+
+                                if combined_accuracy >= self.ACCURACY_THRESHOLD:
+                                    valid_patterns.append({
+                                        'pattern': f"{pattern_name} → {combined_key}",
+                                        'timing_type': 'combined',
+                                        'predicted_direction': combined_key,
+                                        'accuracy': combined_accuracy,
+                                        'occurrences': combined_count,
+                                        'up_count': combined_count if 'up' in combined_key else 0,
+                                        'down_count': combined_count if 'down' in combined_key else 0,
+                                        'same_day_direction': combined_key.split('_then_')[0],
+                                        'same_day_up_count': counts['same_day']['up'],
+                                        'same_day_down_count': counts['same_day']['down'],
+                                        'same_day_accuracy': counts['same_day']['up'] / (counts['same_day']['up'] + counts['same_day']['down']) if (counts['same_day']['up'] + counts['same_day']['down']) > 0 else 0,
+                                        'same_day_total_occurrences': counts['same_day']['up'] + counts['same_day']['down'],
+                                        'combined_pattern': combined_key
+                                    })
+
+                    # Sort by accuracy
+                    valid_patterns.sort(key=lambda x: x['accuracy'], reverse=True)
+
+                    logger.info(f"✨ Found {len(valid_patterns)} valid enhanced timing lunar patterns for {symbol}")
+
+                    return valid_patterns
+
+                def store_patterns(self, patterns: List[Dict], symbol: str = 'SILVER_TIMING'):
+                    """Store patterns in lunar_patterns table with enhanced timing data"""
+                    logger.info(f"💾 Storing {len(patterns)} enhanced timing patterns for {symbol}")
+
+                    cursor = self.conn.cursor()
+
+                    for pattern in patterns:
+                        cursor.execute("""
+                            INSERT INTO lunar_patterns
+                            (pattern_name, pattern_type, prediction, accuracy_rate,
+                             total_occurrences, up_count, down_count, expected_return,
+                             market_symbol, created_at, same_day_direction, same_day_up_count,
+                             same_day_down_count, same_day_accuracy, combined_pattern,
+                             same_day_total_occurrences)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (pattern_name, market_symbol)
+                            DO UPDATE SET
+                                accuracy_rate = EXCLUDED.accuracy_rate,
+                                total_occurrences = EXCLUDED.total_occurrences,
+                                up_count = EXCLUDED.up_count,
+                                down_count = EXCLUDED.down_count,
+                                same_day_direction = EXCLUDED.same_day_direction,
+                                same_day_up_count = EXCLUDED.same_day_up_count,
+                                same_day_down_count = EXCLUDED.same_day_down_count,
+                                same_day_accuracy = EXCLUDED.same_day_accuracy,
+                                combined_pattern = EXCLUDED.combined_pattern,
+                                same_day_total_occurrences = EXCLUDED.same_day_total_occurrences,
+                                created_at = EXCLUDED.created_at
+                        """, (
+                            pattern['pattern'],
+                            f"enhanced_timing_lunar_{pattern['timing_type']}",
+                            pattern['predicted_direction'],
+                            round(pattern['accuracy'], 3),
+                            pattern['occurrences'],
+                            pattern['up_count'],
+                            pattern['down_count'],
+                            0.0,  # expected_return placeholder
+                            symbol,
+                            datetime.now(),
+                            pattern.get('same_day_direction'),
+                            pattern.get('same_day_up_count', 0),
+                            pattern.get('same_day_down_count', 0),
+                            round(pattern.get('same_day_accuracy', 0), 3) if pattern.get('same_day_accuracy') else None,
+                            pattern.get('combined_pattern'),
+                            pattern.get('same_day_total_occurrences', 0)
+                        ))
+
+                    self.conn.commit()
+                    cursor.close()
+                    logger.info(f"✅ Successfully stored {len(patterns)} enhanced timing patterns")
+
+                def run_analysis(self):
+                    """Run the complete enhanced timing lunar analysis"""
+                    logger.info("🚀 Starting ENHANCED TIMING Lunar Backtesting Analysis for SILVER")
+
+                    try:
+                        # Analyze silver futures with enhanced timing patterns
+                        patterns = self.analyze_enhanced_timing_patterns('SILVER')
+
+                        if patterns:
+                            # Store results
+                            self.store_patterns(patterns, 'SILVER_TIMING')
+
+                            # Display top patterns by category
+                            same_day_patterns = [p for p in patterns if p['timing_type'] == 'same_day']
+                            next_day_patterns = [p for p in patterns if p['timing_type'] == 'next_day']
+                            combined_patterns = [p for p in patterns if p['timing_type'] == 'combined']
+
+                            logger.info("🏆 Top Same-Day Timing Patterns:")
+                            for i, pattern in enumerate(same_day_patterns[:10], 1):
+                                logger.info(f"{i:2d}. {pattern['pattern']:<60} → {pattern['predicted_direction']:<4} "
+                                          f"({pattern['accuracy']:.1%} accuracy, {pattern['occurrences']:2d} occurrences)")
+
+                            logger.info("\n🏆 Top Next-Day Timing Patterns:")
+                            for i, pattern in enumerate(next_day_patterns[:10], 1):
+                                logger.info(f"{i:2d}. {pattern['pattern']:<60} → {pattern['predicted_direction']:<4} "
+                                          f"({pattern['accuracy']:.1%} accuracy, {pattern['occurrences']:2d} occurrences)")
+
+                            logger.info("\n🏆 Top Combined Timing Patterns:")
+                            for i, pattern in enumerate(combined_patterns[:10], 1):
+                                logger.info(f"{i:2d}. {pattern['pattern']:<60} "
+                                          f"({pattern['accuracy']:.1%} accuracy, {pattern['occurrences']:2d} occurrences)")
+
+                            logger.info(f"\n📈 Summary: Found {len(patterns)} enhanced timing patterns with ≥{self.ACCURACY_THRESHOLD:.0%} accuracy")
+                            logger.info(f"   - Same-day patterns: {len(same_day_patterns)}")
+                            logger.info(f"   - Next-day patterns: {len(next_day_patterns)}")
+                            logger.info(f"   - Combined patterns: {len(combined_patterns)}")
+                        else:
+                            logger.warning("No significant enhanced timing lunar patterns found")
+
+                        logger.info("🎯 Enhanced timing lunar analysis completed successfully!")
+
+                    except Exception as e:
+                        logger.error(f"Analysis failed: {e}")
+                        raise
+                    finally:
+                        if self.conn:
+                            self.conn.close()
+
+            if __name__ == "__main__":
+                tester = EnhancedDailyLunarSilverTimingTester()
+                tester.run_analysis()
+            EOF
+
+            # Run the enhanced timing lunar tester
+            echo "🌙🥈⏰ Starting Enhanced Timing Lunar Analysis for Silver..."
+            python3 enhanced_daily_lunar_silver_timing.py
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+        resources:
+          requests:
+            memory: "500Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+      restartPolicy: Never
+  backoffLimit: 2

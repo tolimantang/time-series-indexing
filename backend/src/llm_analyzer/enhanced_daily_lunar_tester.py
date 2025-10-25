@@ -158,9 +158,18 @@ class EnhancedDailyLunarTester:
         processed_count = 0
         pattern_hits = 0
 
+        # Track date range for analysis_period fields
+        start_date = None
+        end_date = None
+
         for i in range(len(price_data) - 1):  # Need next day for prediction
             current_date, current_price = price_data[i]
             next_date, next_price = price_data[i + 1]
+
+            # Track date range
+            if start_date is None:
+                start_date = current_date
+            end_date = current_date
 
             # Skip weekends (Saturday=5, Sunday=6)
             if current_date.weekday() >= 5:
@@ -186,8 +195,16 @@ class EnhancedDailyLunarTester:
             # BASIC PATTERNS
             sign_pattern = f"Moon in {lunar_pos['zodiac_sign']}"
             if sign_pattern not in patterns:
-                patterns[sign_pattern] = {'up': 0, 'down': 0}
+                patterns[sign_pattern] = {
+                    'up': 0, 'down': 0, 'up_moves': [], 'down_moves': [],
+                    'moon_sign': lunar_pos['zodiac_sign'], 'aspect_type': '',
+                    'target_planet': '', 'target_sign': ''
+                }
             patterns[sign_pattern][direction] += 1
+            if direction == 'up':
+                patterns[sign_pattern]['up_moves'].append(price_change)
+            else:
+                patterns[sign_pattern]['down_moves'].append(price_change)
             pattern_hits += 1
 
             # ENHANCED POSITIONAL PATTERNS
@@ -195,22 +212,46 @@ class EnhancedDailyLunarTester:
                 # Basic aspect pattern
                 basic_aspect_pattern = f"Moon {aspect['aspect']} {aspect['planet']}"
                 if basic_aspect_pattern not in patterns:
-                    patterns[basic_aspect_pattern] = {'up': 0, 'down': 0}
+                    patterns[basic_aspect_pattern] = {
+                        'up': 0, 'down': 0, 'up_moves': [], 'down_moves': [],
+                        'moon_sign': lunar_pos['zodiac_sign'], 'aspect_type': aspect['aspect'],
+                        'target_planet': aspect['planet'], 'target_sign': aspect.get('target_sign', '')
+                    }
                 patterns[basic_aspect_pattern][direction] += 1
+                if direction == 'up':
+                    patterns[basic_aspect_pattern]['up_moves'].append(price_change)
+                else:
+                    patterns[basic_aspect_pattern]['down_moves'].append(price_change)
                 pattern_hits += 1
 
                 # ENHANCED: Aspect with target planet sign
                 enhanced_aspect_pattern = f"Moon {aspect['aspect']} {aspect['planet']} in {aspect['target_sign']}"
                 if enhanced_aspect_pattern not in patterns:
-                    patterns[enhanced_aspect_pattern] = {'up': 0, 'down': 0}
+                    patterns[enhanced_aspect_pattern] = {
+                        'up': 0, 'down': 0, 'up_moves': [], 'down_moves': [],
+                        'moon_sign': lunar_pos['zodiac_sign'], 'aspect_type': aspect['aspect'],
+                        'target_planet': aspect['planet'], 'target_sign': aspect['target_sign']
+                    }
                 patterns[enhanced_aspect_pattern][direction] += 1
+                if direction == 'up':
+                    patterns[enhanced_aspect_pattern]['up_moves'].append(price_change)
+                else:
+                    patterns[enhanced_aspect_pattern]['down_moves'].append(price_change)
                 pattern_hits += 1
 
                 # ENHANCED: Moon sign + aspect + target planet sign
                 full_context_pattern = f"Moon in {lunar_pos['zodiac_sign']} {aspect['aspect']} {aspect['planet']} in {aspect['target_sign']}"
                 if full_context_pattern not in patterns:
-                    patterns[full_context_pattern] = {'up': 0, 'down': 0}
+                    patterns[full_context_pattern] = {
+                        'up': 0, 'down': 0, 'up_moves': [], 'down_moves': [],
+                        'moon_sign': lunar_pos['zodiac_sign'], 'aspect_type': aspect['aspect'],
+                        'target_planet': aspect['planet'], 'target_sign': aspect['target_sign']
+                    }
                 patterns[full_context_pattern][direction] += 1
+                if direction == 'up':
+                    patterns[full_context_pattern]['up_moves'].append(price_change)
+                else:
+                    patterns[full_context_pattern]['down_moves'].append(price_change)
                 pattern_hits += 1
 
             # Log progress every 50 processed points
@@ -223,30 +264,54 @@ class EnhancedDailyLunarTester:
         # Filter and evaluate patterns
         valid_patterns = []
 
-        for pattern_name, counts in patterns.items():
-            total = counts['up'] + counts['down']
+        for pattern_name, data in patterns.items():
+            total = data['up'] + data['down']
 
             if total >= self.MIN_OCCURRENCES:
-                up_accuracy = counts['up'] / total
-                down_accuracy = counts['down'] / total
+                up_accuracy = data['up'] / total
+                down_accuracy = data['down'] / total
+
+                # Calculate averages
+                avg_up_move = sum(data['up_moves']) / len(data['up_moves']) if data['up_moves'] else 0.0
+                avg_down_move = sum(data['down_moves']) / len(data['down_moves']) if data['down_moves'] else 0.0
 
                 if up_accuracy >= self.ACCURACY_THRESHOLD:
+                    expected_return = up_accuracy * avg_up_move
                     valid_patterns.append({
                         'pattern': pattern_name,
                         'predicted_direction': 'up',
                         'accuracy': up_accuracy,
                         'occurrences': total,
-                        'up_count': counts['up'],
-                        'down_count': counts['down']
+                        'up_count': data['up'],
+                        'down_count': data['down'],
+                        'avg_up_move': avg_up_move,
+                        'avg_down_move': avg_down_move,
+                        'expected_return': expected_return,
+                        'moon_sign': data['moon_sign'],
+                        'aspect_type': data['aspect_type'],
+                        'target_planet': data['target_planet'],
+                        'target_sign': data['target_sign'],
+                        'analysis_period_start': start_date,
+                        'analysis_period_end': end_date
                     })
                 elif down_accuracy >= self.ACCURACY_THRESHOLD:
+                    expected_return = down_accuracy * abs(avg_down_move)
                     valid_patterns.append({
                         'pattern': pattern_name,
                         'predicted_direction': 'down',
                         'accuracy': down_accuracy,
                         'occurrences': total,
-                        'up_count': counts['up'],
-                        'down_count': counts['down']
+                        'up_count': data['up'],
+                        'down_count': data['down'],
+                        'avg_up_move': avg_up_move,
+                        'avg_down_move': avg_down_move,
+                        'expected_return': expected_return,
+                        'moon_sign': data['moon_sign'],
+                        'aspect_type': data['aspect_type'],
+                        'target_planet': data['target_planet'],
+                        'target_sign': data['target_sign'],
+                        'analysis_period_start': start_date,
+                        'analysis_period_end': end_date
                     })
 
         # Sort by accuracy
@@ -266,15 +331,25 @@ class EnhancedDailyLunarTester:
             cursor.execute("""
                 INSERT INTO lunar_patterns
                 (pattern_name, pattern_type, prediction, accuracy_rate,
-                 total_occurrences, up_count, down_count, expected_return,
-                 market_symbol, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 total_occurrences, up_count, down_count, avg_up_move, avg_down_move, expected_return,
+                 aspect_type, moon_sign, target_planet, target_sign,
+                 analysis_period_start, analysis_period_end, market_symbol, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (pattern_name, market_symbol)
                 DO UPDATE SET
                     accuracy_rate = EXCLUDED.accuracy_rate,
                     total_occurrences = EXCLUDED.total_occurrences,
                     up_count = EXCLUDED.up_count,
                     down_count = EXCLUDED.down_count,
+                    avg_up_move = EXCLUDED.avg_up_move,
+                    avg_down_move = EXCLUDED.avg_down_move,
+                    expected_return = EXCLUDED.expected_return,
+                    aspect_type = EXCLUDED.aspect_type,
+                    moon_sign = EXCLUDED.moon_sign,
+                    target_planet = EXCLUDED.target_planet,
+                    target_sign = EXCLUDED.target_sign,
+                    analysis_period_start = EXCLUDED.analysis_period_start,
+                    analysis_period_end = EXCLUDED.analysis_period_end,
                     created_at = EXCLUDED.created_at
             """, (
                 pattern['pattern'],
@@ -284,7 +359,15 @@ class EnhancedDailyLunarTester:
                 pattern['occurrences'],
                 pattern['up_count'],
                 pattern['down_count'],
-                0.0,  # expected_return placeholder
+                round(pattern['avg_up_move'], 4),
+                round(pattern['avg_down_move'], 4),
+                round(pattern['expected_return'], 4),
+                pattern['aspect_type'] or None,
+                pattern['moon_sign'] or None,
+                pattern['target_planet'] or None,
+                pattern['target_sign'] or None,
+                pattern['analysis_period_start'].date() if pattern['analysis_period_start'] else None,
+                pattern['analysis_period_end'].date() if pattern['analysis_period_end'] else None,
                 symbol,
                 datetime.now()
             ))
