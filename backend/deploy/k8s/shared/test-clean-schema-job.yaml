@@ -1,0 +1,89 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-clean-schema-platinum
+  namespace: time-series-indexing
+spec:
+  template:
+    spec:
+      containers:
+      - name: test-clean-schema
+        image: python:3.11-slim
+        command: ["/bin/bash"]
+        args:
+          - -c
+          - |
+            echo "🧪 Testing Clean Schema with Enhanced Daily Lunar Tester"
+
+            # Install dependencies
+            apt-get update && apt-get install -y \
+              python3 \
+              python3-pip \
+              libpq-dev \
+              gcc \
+              git \
+              && rm -rf /var/lib/apt/lists/*
+
+            # Install Python dependencies
+            pip3 install --no-cache-dir psycopg2-binary==2.9.11
+
+            # Clone the repository to get the updated tester
+            git clone https://github.com/your-repo/time-series-indexing.git /workspace || \
+            echo "Using local workspace structure..."
+
+            # Copy the updated script content
+            mkdir -p /workspace/backend/src/llm_analyzer
+            cat > /workspace/backend/src/llm_analyzer/enhanced_daily_lunar_tester.py << 'SCRIPT_EOF'
+            $(cat /mount/enhanced_daily_lunar_tester.py)
+            SCRIPT_EOF
+
+            cd /workspace/backend
+
+            # Test both timing types for platinum
+            echo "🎯 Testing next-day analysis for PLATINUM..."
+            python3 src/llm_analyzer/enhanced_daily_lunar_tester.py PLATINUM_FUTURES PLATINUM next_day
+
+            echo "🎯 Testing same-day analysis for PLATINUM..."
+            python3 src/llm_analyzer/enhanced_daily_lunar_tester.py PLATINUM_FUTURES PLATINUM same_day
+
+            echo "✅ Clean schema test completed!"
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+        volumeMounts:
+        - name: script-volume
+          mountPath: /mount
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+      volumes:
+      - name: script-volume
+        hostPath:
+          path: /Users/yetang/Development/time-series-indexing/backend/src/llm_analyzer
+          type: Directory
+      restartPolicy: Never
+  backoffLimit: 2

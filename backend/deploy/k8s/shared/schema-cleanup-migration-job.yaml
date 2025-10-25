@@ -1,0 +1,307 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: schema-cleanup-migration
+  namespace: time-series-indexing
+spec:
+  template:
+    spec:
+      containers:
+      - name: migration-runner
+        image: python:3.11-slim
+        command: ["/bin/bash"]
+        args:
+          - -c
+          - |
+            echo "🔧 Running Schema Cleanup Migration"
+
+            # Install dependencies
+            apt-get update && apt-get install -y \
+              python3 \
+              python3-pip \
+              libpq-dev \
+              gcc \
+              git \
+              && rm -rf /var/lib/apt/lists/*
+
+            # Install Python dependencies
+            pip3 install --no-cache-dir psycopg2-binary==2.9.11
+
+            # Clone the migration files (or we could mount them as a volume)
+            # For now, let's create the migration runner inline
+            cat > run_migration.py << 'EOF'
+            #!/usr/bin/env python3
+            """
+            SQL Migration Runner for Kubernetes
+            """
+
+            import os
+            import psycopg2
+            import logging
+
+            logging.basicConfig(level=logging.INFO)
+            logger = logging.getLogger(__name__)
+
+            class MigrationRunner:
+                def __init__(self):
+                    self.db_config = {
+                        'host': os.environ.get('DB_HOST'),
+                        'port': os.environ.get('DB_PORT', '5432'),
+                        'database': os.environ.get('DB_NAME'),
+                        'user': os.environ.get('DB_USER'),
+                        'password': os.environ.get('DB_PASSWORD'),
+                    }
+
+                def get_connection(self):
+                    return psycopg2.connect(**self.db_config)
+
+                def ensure_migrations_table(self):
+                    with self.get_connection() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute("""
+                                CREATE TABLE IF NOT EXISTS schema_migrations (
+                                    id SERIAL PRIMARY KEY,
+                                    migration_name VARCHAR(255) UNIQUE NOT NULL,
+                                    executed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                                );
+                            """)
+                            conn.commit()
+                            logger.info("Migrations table ready")
+
+                def run_migration(self, migration_name, migration_sql):
+                    logger.info(f"Running migration: {migration_name}")
+
+                    with self.get_connection() as conn:
+                        with conn.cursor() as cur:
+                            try:
+                                # Check if already run
+                                cur.execute(
+                                    "SELECT 1 FROM schema_migrations WHERE migration_name = %s",
+                                    (migration_name,)
+                                )
+                                if cur.fetchone():
+                                    logger.info(f"Migration {migration_name} already completed, skipping")
+                                    return
+
+                                # Execute migration
+                                cur.execute(migration_sql)
+
+                                # Record migration as completed
+                                cur.execute(
+                                    "INSERT INTO schema_migrations (migration_name) VALUES (%s)",
+                                    (migration_name,)
+                                )
+
+                                conn.commit()
+                                logger.info(f"Migration {migration_name} completed successfully")
+
+                            except Exception as e:
+                                conn.rollback()
+                                logger.error(f"Migration {migration_name} failed: {e}")
+                                raise
+
+            # Initialize runner
+            runner = MigrationRunner()
+            runner.ensure_migrations_table()
+            EOF
+
+            # Create the migration SQL inline
+            cat > 004_clean_lunar_patterns_schema.sql << 'EOF'
+            -- Migration: Clean up lunar_patterns table schema
+            -- Purpose: Standardize lunar pattern storage with clean timing separation
+
+            -- Create backup table
+            CREATE TABLE IF NOT EXISTS lunar_patterns_backup AS
+            SELECT * FROM lunar_patterns;
+
+            -- Drop existing table
+            DROP TABLE IF EXISTS lunar_patterns;
+
+            -- Create new clean lunar_patterns table
+            CREATE TABLE lunar_patterns (
+                id SERIAL PRIMARY KEY,
+
+                -- Core pattern identification
+                pattern_name VARCHAR(255) NOT NULL,
+                pattern_type VARCHAR(50) NOT NULL DEFAULT 'lunar_transit',
+                timing_type VARCHAR(20) NOT NULL CHECK (timing_type IN ('same_day', 'next_day')),
+
+                -- Prediction and accuracy
+                prediction VARCHAR(10) NOT NULL CHECK (prediction IN ('up', 'down')),
+                accuracy_rate DECIMAL(5,3) NOT NULL CHECK (accuracy_rate >= 0 AND accuracy_rate <= 1),
+
+                -- Occurrence statistics
+                total_occurrences INTEGER NOT NULL DEFAULT 0,
+                up_count INTEGER NOT NULL DEFAULT 0,
+                down_count INTEGER NOT NULL DEFAULT 0,
+
+                -- Price movement statistics
+                avg_up_move DECIMAL(8,4) DEFAULT 0,
+                avg_down_move DECIMAL(8,4) DEFAULT 0,
+                expected_return DECIMAL(8,4) DEFAULT 0,
+
+                -- Astrological context
+                aspect_type VARCHAR(50),
+                moon_sign VARCHAR(20),
+                target_planet VARCHAR(20),
+                target_sign VARCHAR(20),
+                minimum_orb DECIMAL(4,2) DEFAULT 3.0,
+
+                -- Market and analysis context
+                market_symbol VARCHAR(50) NOT NULL,
+                analysis_period_start DATE,
+                analysis_period_end DATE,
+
+                -- Quality metrics
+                accuracy_rank INTEGER,
+                return_rank INTEGER,
+
+                -- Metadata
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+                -- Constraints
+                UNIQUE(pattern_name, market_symbol, timing_type),
+                CHECK (up_count + down_count = total_occurrences)
+            );
+
+            -- Create indexes
+            CREATE INDEX idx_lunar_patterns_market_timing ON lunar_patterns(market_symbol, timing_type);
+            CREATE INDEX idx_lunar_patterns_accuracy ON lunar_patterns(accuracy_rate DESC);
+            CREATE INDEX idx_lunar_patterns_expected_return ON lunar_patterns(expected_return DESC);
+            CREATE INDEX idx_lunar_patterns_pattern_name ON lunar_patterns(pattern_name);
+
+            -- Create updated_at trigger
+            CREATE OR REPLACE FUNCTION update_updated_at_column()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                NEW.updated_at = NOW();
+                RETURN NEW;
+            END;
+            $$ language 'plpgsql';
+
+            CREATE TRIGGER update_lunar_patterns_updated_at
+                BEFORE UPDATE ON lunar_patterns
+                FOR EACH ROW
+                EXECUTE FUNCTION update_updated_at_column();
+
+            -- Migrate clean data from backup
+            INSERT INTO lunar_patterns (
+                pattern_name,
+                pattern_type,
+                timing_type,
+                prediction,
+                accuracy_rate,
+                total_occurrences,
+                up_count,
+                down_count,
+                avg_up_move,
+                avg_down_move,
+                expected_return,
+                aspect_type,
+                moon_sign,
+                target_planet,
+                target_sign,
+                minimum_orb,
+                market_symbol,
+                analysis_period_start,
+                analysis_period_end,
+                created_at
+            )
+            SELECT
+                pattern_name,
+                'lunar_transit' as pattern_type,
+                CASE
+                    WHEN pattern_type LIKE '%same_day%' THEN 'same_day'
+                    ELSE 'next_day'
+                END as timing_type,
+                LOWER(prediction) as prediction,
+                accuracy_rate,
+                total_occurrences,
+                up_count,
+                down_count,
+                COALESCE(avg_up_move, 0) as avg_up_move,
+                COALESCE(avg_down_move, 0) as avg_down_move,
+                COALESCE(expected_return, 0) as expected_return,
+                aspect_type,
+                moon_sign,
+                target_planet,
+                target_sign,
+                COALESCE(minimum_orb, 3.0) as minimum_orb,
+                market_symbol,
+                analysis_period_start,
+                analysis_period_end,
+                created_at
+            FROM lunar_patterns_backup
+            WHERE
+                pattern_name IS NOT NULL
+                AND prediction IS NOT NULL
+                AND accuracy_rate IS NOT NULL
+                AND total_occurrences > 0
+                AND market_symbol IS NOT NULL
+                AND accuracy_rate <= 1.0
+                AND total_occurrences >= up_count + down_count;
+
+            -- Create view for best patterns
+            CREATE OR REPLACE VIEW best_lunar_patterns AS
+            SELECT
+                pattern_name,
+                timing_type,
+                prediction,
+                accuracy_rate,
+                expected_return,
+                total_occurrences,
+                market_symbol,
+                aspect_type,
+                moon_sign,
+                target_planet,
+                target_sign,
+                ROW_NUMBER() OVER (
+                    PARTITION BY market_symbol, timing_type
+                    ORDER BY accuracy_rate DESC, expected_return DESC
+                ) as rank
+            FROM lunar_patterns
+            WHERE accuracy_rate >= 0.65
+            ORDER BY market_symbol, timing_type, accuracy_rate DESC;
+            EOF
+
+            # Run the migration
+            python3 -c "
+            exec(open('run_migration.py').read())
+            migration_sql = open('004_clean_lunar_patterns_schema.sql').read()
+            runner.run_migration('004_clean_lunar_patterns_schema', migration_sql)
+            print('✅ Schema cleanup migration completed!')
+            "
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+      restartPolicy: Never
+  backoffLimit: 1

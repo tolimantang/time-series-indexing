@@ -1,0 +1,68 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: flyway-repair
+  namespace: time-series-indexing
+spec:
+  template:
+    spec:
+      containers:
+      - name: flyway-repair
+        image: flyway/flyway:10.15.0
+        command: ["/bin/sh"]
+        args:
+          - -c
+          - |
+            echo "🔧 Running Flyway repair to fix checksums..."
+
+            # Set up Flyway configuration from environment
+            export FLYWAY_URL="jdbc:postgresql://${DB_HOST}:${DB_PORT}/${DB_NAME}"
+            export FLYWAY_USER="${DB_USER}"
+            export FLYWAY_PASSWORD="${DB_PASSWORD}"
+
+            echo "📊 Database: ${FLYWAY_URL}"
+
+            # Show current state
+            echo "🔍 Current schema state:"
+            flyway info
+
+            # Repair schema history
+            echo "🔧 Repairing schema history..."
+            flyway repair
+
+            # Show repaired state
+            echo "✅ Repaired schema state:"
+            flyway info
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+      restartPolicy: Never
+  backoffLimit: 1

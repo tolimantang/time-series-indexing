@@ -1,0 +1,95 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: enhanced-daily-lunar-analysis
+  namespace: time-series-indexing
+spec:
+  # Run daily at 7 AM UTC (market close + analysis time)
+  schedule: "0 7 * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: enhanced-daily-lunar-analyzer
+            image: python:3.11-slim
+            command: ["/bin/bash"]
+            args:
+              - -c
+              - |
+                echo "🌙📈 Enhanced Daily Lunar Analysis CronJob"
+
+                # Install dependencies
+                apt-get update && apt-get install -y \
+                  python3 \
+                  python3-pip \
+                  libpq-dev \
+                  gcc \
+                  git \
+                  && rm -rf /var/lib/apt/lists/*
+
+                # Install Python dependencies
+                pip3 install --no-cache-dir psycopg2-binary==2.9.11
+
+                # Clone the repository to get the enhanced tester
+                git clone https://github.com/your-repo/time-series-indexing.git /workspace
+                cd /workspace/backend
+
+                # Run both same-day and next-day analysis for multiple symbols
+                symbols=(
+                  "PLATINUM_FUTURES PLATINUM"
+                  "SILVER_FUTURES SILVER"
+                  "GOLD_FUTURES GOLD"
+                )
+
+                for symbol_pair in "${symbols[@]}"; do
+                  read -r symbol market <<< "$symbol_pair"
+                  echo "🎯 Analyzing $market ($symbol)..."
+
+                  # Run next-day analysis
+                  echo "📊 Running next-day analysis for $market..."
+                  python3 src/llm_analyzer/enhanced_daily_lunar_tester.py "$symbol" "$market" next_day
+
+                  # Run same-day analysis
+                  echo "📊 Running same-day analysis for $market..."
+                  python3 src/llm_analyzer/enhanced_daily_lunar_tester.py "$symbol" "$market" same_day
+
+                  echo "✅ Completed analysis for $market"
+                  sleep 5  # Brief pause between symbols
+                done
+
+                echo "🎯 Daily lunar analysis completed for all symbols!"
+            env:
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-host
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-user
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-name
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-password
+            - name: DB_PORT
+              value: "5432"
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "250m"
+              limits:
+                memory: "1Gi"
+                cpu: "500m"
+          restartPolicy: OnFailure
+      backoffLimit: 2

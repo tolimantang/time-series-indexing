@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class EnhancedDailyLunarTester:
-    def __init__(self):
+    def __init__(self, timing_type='next_day'):
         # PostgreSQL connection using environment variables from secrets
         self.conn = psycopg2.connect(
             host=os.environ.get('DB_HOST'),
@@ -35,6 +35,7 @@ class EnhancedDailyLunarTester:
         # Balanced thresholds for daily analysis
         self.ACCURACY_THRESHOLD = 0.65  # 65% accuracy
         self.MIN_OCCURRENCES = 5       # 5 minimum occurrences (higher than hourly)
+        self.timing_type = timing_type  # 'same_day' or 'next_day'
 
     def get_enhanced_planetary_aspects(self, trade_date: datetime) -> List[Dict]:
         """Get all planetary aspects WITH the target planet's sign position"""
@@ -144,7 +145,7 @@ class EnhancedDailyLunarTester:
 
     def analyze_enhanced_daily_patterns(self, symbol: str) -> List[Dict]:
         """Analyze enhanced daily lunar patterns with precise timing and positional context"""
-        logger.info(f"🎯 Analyzing ENHANCED daily lunar patterns for {symbol}")
+        logger.info(f"🎯 Analyzing ENHANCED daily lunar patterns for {symbol} ({self.timing_type} movements)")
 
         # Get daily price data from database
         price_data = self.get_daily_price_data(symbol)
@@ -153,7 +154,7 @@ class EnhancedDailyLunarTester:
             logger.error(f"No daily price data found for {symbol}")
             return []
 
-        logger.info(f"📊 Processing {len(price_data)} daily price points for enhanced analysis")
+        logger.info(f"📊 Processing {len(price_data)} daily price points for enhanced {self.timing_type} analysis")
         patterns = {}
         processed_count = 0
         pattern_hits = 0
@@ -162,9 +163,21 @@ class EnhancedDailyLunarTester:
         start_date = None
         end_date = None
 
-        for i in range(len(price_data) - 1):  # Need next day for prediction
+        for i in range(len(price_data) - 1):  # Need next day for next_day analysis
             current_date, current_price = price_data[i]
-            next_date, next_price = price_data[i + 1]
+
+            # For same_day analysis, we need open price (approximated as previous close)
+            if self.timing_type == 'same_day':
+                if i == 0:
+                    continue  # Skip first day as we need previous price
+                prev_date, prev_price = price_data[i - 1]
+                reference_price = prev_price  # Use previous close as "open"
+                target_price = current_price  # Current close
+            else:
+                # For next_day analysis
+                next_date, next_price = price_data[i + 1]
+                reference_price = current_price
+                target_price = next_price
 
             # Track date range
             if start_date is None:
@@ -183,8 +196,8 @@ class EnhancedDailyLunarTester:
             # Get enhanced aspects with target planet signs
             aspects = self.get_enhanced_planetary_aspects(current_date)
 
-            # Calculate next-day price movement
-            price_change = ((next_price - current_price) / current_price) * 100
+            # Calculate price movement based on timing type
+            price_change = ((target_price - reference_price) / reference_price) * 100
             direction = 'up' if price_change > 0.1 else 'down' if price_change < -0.1 else 'flat'
 
             if direction == 'flat':
@@ -322,7 +335,7 @@ class EnhancedDailyLunarTester:
         return valid_patterns
 
     def store_patterns(self, patterns: List[Dict], symbol: str):
-        """Store patterns in lunar_patterns table"""
+        """Store patterns in lunar_patterns table using new clean schema"""
         logger.info(f"💾 Storing {len(patterns)} enhanced daily patterns for {symbol}")
 
         cursor = self.conn.cursor()
@@ -330,12 +343,12 @@ class EnhancedDailyLunarTester:
         for pattern in patterns:
             cursor.execute("""
                 INSERT INTO lunar_patterns
-                (pattern_name, pattern_type, prediction, accuracy_rate,
+                (pattern_name, pattern_type, timing_type, prediction, accuracy_rate,
                  total_occurrences, up_count, down_count, avg_up_move, avg_down_move, expected_return,
                  aspect_type, moon_sign, target_planet, target_sign,
                  analysis_period_start, analysis_period_end, market_symbol, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (pattern_name, market_symbol)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (pattern_name, market_symbol, timing_type)
                 DO UPDATE SET
                     accuracy_rate = EXCLUDED.accuracy_rate,
                     total_occurrences = EXCLUDED.total_occurrences,
@@ -350,10 +363,11 @@ class EnhancedDailyLunarTester:
                     target_sign = EXCLUDED.target_sign,
                     analysis_period_start = EXCLUDED.analysis_period_start,
                     analysis_period_end = EXCLUDED.analysis_period_end,
-                    created_at = EXCLUDED.created_at
+                    updated_at = NOW()
             """, (
                 pattern['pattern'],
-                'enhanced_daily_lunar_transit',
+                'lunar_transit',  # Clean pattern type
+                self.timing_type,  # Use instance timing type
                 pattern['predicted_direction'],
                 round(pattern['accuracy'], 3),
                 pattern['occurrences'],
@@ -411,15 +425,21 @@ def main():
     """Main execution"""
     import sys
 
-    if len(sys.argv) != 3:
-        print("Usage: python enhanced_daily_lunar_tester.py <SYMBOL> <MARKET_NAME>")
-        print("Example: python enhanced_daily_lunar_tester.py PLATINUM_FUTURES PLATINUM")
+    if len(sys.argv) not in [3, 4]:
+        print("Usage: python enhanced_daily_lunar_tester.py <SYMBOL> <MARKET_NAME> [TIMING_TYPE]")
+        print("Example: python enhanced_daily_lunar_tester.py PLATINUM_FUTURES PLATINUM next_day")
+        print("TIMING_TYPE: 'same_day' or 'next_day' (default: next_day)")
         sys.exit(1)
 
     symbol = sys.argv[1]
     market_name = sys.argv[2]
+    timing_type = sys.argv[3] if len(sys.argv) == 4 else 'next_day'
 
-    tester = EnhancedDailyLunarTester()
+    if timing_type not in ['same_day', 'next_day']:
+        print("Error: TIMING_TYPE must be 'same_day' or 'next_day'")
+        sys.exit(1)
+
+    tester = EnhancedDailyLunarTester(timing_type=timing_type)
     tester.run_analysis(symbol, market_name)
 
 if __name__ == "__main__":

@@ -1,0 +1,100 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: flyway-status-check
+  namespace: time-series-indexing
+spec:
+  template:
+    spec:
+      containers:
+      - name: flyway-status
+        image: flyway/flyway:10.15.0
+        command: ["/bin/sh"]
+        args:
+          - -c
+          - |
+            echo "📊 Checking Final Flyway Migration Status"
+            echo "========================================="
+
+            # Set up Flyway configuration from environment
+            export FLYWAY_URL="jdbc:postgresql://${DB_HOST}:${DB_PORT}/${DB_NAME}"
+            export FLYWAY_USER="${DB_USER}"
+            export FLYWAY_PASSWORD="${DB_PASSWORD}"
+            export FLYWAY_LOCATIONS="filesystem:/migrations"
+
+            echo "📊 Database: ${FLYWAY_URL}"
+
+            # Show final schema state
+            echo "✅ Final Migration State:"
+            flyway info
+
+            # Check if lunar_patterns table exists with correct schema
+            echo ""
+            echo "🔍 Checking lunar_patterns table schema:"
+            psql "${FLYWAY_URL}" -c "\d lunar_patterns" 2>/dev/null || echo "❌ lunar_patterns table not found"
+
+            # Check if view exists
+            echo ""
+            echo "🔍 Checking best_lunar_patterns view:"
+            psql "${FLYWAY_URL}" -c "\d best_lunar_patterns" 2>/dev/null || echo "❌ best_lunar_patterns view not found"
+
+            # Show table counts
+            echo ""
+            echo "📊 Table row counts:"
+            psql "${FLYWAY_URL}" -c "
+                SELECT
+                    'lunar_patterns' as table_name,
+                    COUNT(*) as row_count
+                FROM lunar_patterns
+                UNION ALL
+                SELECT
+                    'lunar_patterns_backup_clean' as table_name,
+                    COUNT(*) as row_count
+                FROM lunar_patterns_backup_clean
+                WHERE EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'lunar_patterns_backup_clean')
+            " 2>/dev/null || echo "❌ Could not query table counts"
+
+            echo ""
+            echo "🎯 Migration analysis completed!"
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+        volumeMounts:
+        - name: migrations-volume
+          mountPath: /migrations
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+
+      volumes:
+      - name: migrations-volume
+        configMap:
+          name: flyway-migrations
+
+      restartPolicy: Never
+  backoffLimit: 1

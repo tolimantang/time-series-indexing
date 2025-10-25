@@ -1,0 +1,124 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: flyway-migration
+  namespace: time-series-indexing
+spec:
+  template:
+    spec:
+      initContainers:
+      # Clone the repository to get migration files
+      - name: git-clone
+        image: alpine/git:latest
+        command: ["/bin/sh"]
+        args:
+          - -c
+          - |
+            echo "📂 Cloning repository for migration files..."
+            git clone https://github.com/your-repo/time-series-indexing.git /workspace || \
+            echo "⚠️  Using placeholder - update with actual repo URL"
+
+            # Copy migration files to shared volume
+            if [ -d /workspace/backend/sql/flyway ]; then
+              cp -r /workspace/backend/sql/flyway/* /migrations/
+              cp /workspace/backend/sql/flyway.conf /config/
+              echo "✅ Migration files copied successfully"
+              ls -la /migrations/
+            else
+              echo "❌ Migration files not found"
+              exit 1
+            fi
+        volumeMounts:
+        - name: migrations-volume
+          mountPath: /migrations
+        - name: config-volume
+          mountPath: /config
+        - name: workspace-volume
+          mountPath: /workspace
+
+      containers:
+      - name: flyway
+        image: flyway/flyway:10.15.0
+        command: ["/bin/sh"]
+        args:
+          - -c
+          - |
+            echo "🛠️  Running Flyway migrations..."
+
+            # Set up Flyway configuration from environment
+            export FLYWAY_URL="jdbc:postgresql://${DB_HOST}:${DB_PORT}/${DB_NAME}"
+            export FLYWAY_USER="${DB_USER}"
+            export FLYWAY_PASSWORD="${DB_PASSWORD}"
+            export FLYWAY_LOCATIONS="filesystem:/migrations"
+            export FLYWAY_BASELINE_ON_MIGRATE=true
+            export FLYWAY_BASELINE_VERSION=0
+            export FLYWAY_BASELINE_DESCRIPTION="Pre-Flyway baseline"
+            export FLYWAY_SCHEMAS=public
+            export FLYWAY_TABLE=flyway_schema_history
+            export FLYWAY_VALIDATE_ON_MIGRATE=true
+
+            echo "📊 Database: ${FLYWAY_URL}"
+            echo "📁 Migrations location: ${FLYWAY_LOCATIONS}"
+
+            # Show migration files
+            echo "📋 Available migrations:"
+            ls -la /migrations/
+
+            # Show current schema state
+            echo "🔍 Checking current schema state..."
+            flyway info || echo "⚠️  Schema history table doesn't exist yet"
+
+            # Run migrations
+            echo "🚀 Running migrations..."
+            flyway migrate
+
+            # Show final state
+            echo "✅ Migration completed! Final state:"
+            flyway info
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+        volumeMounts:
+        - name: migrations-volume
+          mountPath: /migrations
+        - name: config-volume
+          mountPath: /config
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+
+      volumes:
+      - name: migrations-volume
+        emptyDir: {}
+      - name: config-volume
+        emptyDir: {}
+      - name: workspace-volume
+        emptyDir: {}
+
+      restartPolicy: Never
+  backoffLimit: 1
