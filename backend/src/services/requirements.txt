@@ -1,0 +1,10 @@
+# FastAPI service dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+
+# Database
+psycopg2-binary==2.9.9
+
+# Logging
+python-json-logger==2.0.7
