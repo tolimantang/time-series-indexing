@@ -212,6 +212,17 @@ class PatternMatcher:
                 'aspects': day_forecast.aspects
             }
 
+            # Enhanced logging for key dates
+            moon_aspects = [a for a in day_forecast.aspects if a.get('planet1') == 'moon' or a.get('planet2') == 'moon']
+            pluto_aspects = [a for a in day_forecast.aspects if 'pluto' in [a.get('planet1'), a.get('planet2')]]
+
+            if day_forecast.date in ['2025-10-28', '2025-10-29'] or len(pluto_aspects) > 0:
+                logger.info(f"🔍 Scanning {day_forecast.date}: Moon in {day_forecast.moon_sign}")
+                moon_aspect_list = [f"{a.get('planet1')}-{a.get('planet2')} {a.get('aspect_type')}" for a in moon_aspects]
+                pluto_aspect_list = [f"{a.get('planet1')}-{a.get('planet2')} {a.get('aspect_type')}" for a in pluto_aspects]
+                logger.info(f"   🌙 Moon aspects: {moon_aspect_list}")
+                logger.info(f"   🪐 Pluto aspects: {pluto_aspect_list}")
+
             # Find patterns for this day
             day_matches = self.match_astro_to_patterns(astro_data, patterns)
 
