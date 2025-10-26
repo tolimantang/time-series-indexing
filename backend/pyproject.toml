@@ -3,14 +3,13 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "time-series-indexing"
+name = "astrofinancial-backend"
 version = "0.1.0"
-description = "Time series data indexing and encoding system for financial markets"
+description = "AstroFinancial backend services for time series analysis"
 authors = [{name = "Justin Tang", email = "justin@example.com"}]
-readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
-keywords = ["finance", "time-series", "indexing", "market-data"]
+license = "MIT"
+keywords = ["finance", "time-series", "astrology", "trading"]
 
 dependencies = [
     # Core dependencies
@@ -65,22 +64,10 @@ test = [
     "pytest-mock>=3.10.0",
 ]
 
-[project.scripts]
-market-encoder-daily = "scripts.daily_market_encoding:main"
-market-encoder-simple = "scripts.simple_daily_encoding:main"
-market-encoder-test = "scripts.test_market_encoder:main"
-
 [project.urls]
 Homepage = "https://github.com/yourusername/time-series-indexing"
 Repository = "https://github.com/yourusername/time-series-indexing"
 Issues = "https://github.com/yourusername/time-series-indexing/issues"
-
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["market_encoder*", "shared*"]
-
-[tool.setuptools.package-data]
-market_encoder = ["*.yaml", "*.yml"]
 
 # Development tools configuration
 [tool.black]
