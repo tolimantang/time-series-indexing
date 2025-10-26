@@ -241,7 +241,7 @@ class PatternMatcher:
 
         if moon_position and pattern_moon_sign:
             total_factors += 1
-            if actual_moon_sign == pattern_moon_sign:
+            if actual_moon_sign and actual_moon_sign.lower() == pattern_moon_sign.lower():
                 score += 0.4  # Moon sign is important
                 logger.info(f"🌙 Moon sign MATCH: {actual_moon_sign} == {pattern_moon_sign}")
             else:
@@ -253,7 +253,8 @@ class PatternMatcher:
         pattern_target = pattern.get('target_planet')
 
         moon_aspects = [a for a in aspects if a.get('planet1') == 'moon' or a.get('planet2') == 'moon']
-        logger.info(f"🔗 Found {len(moon_aspects)} Moon aspects: {[f\"{a.get('planet1')}-{a.get('planet2')} {a.get('aspect_type')}\" for a in moon_aspects[:3]]}")
+        aspect_descriptions = [f"{a.get('planet1')}-{a.get('planet2')} {a.get('aspect_type')}" for a in moon_aspects[:3]]
+        logger.info(f"🔗 Found {len(moon_aspects)} Moon aspects: {aspect_descriptions}")
 
         for aspect in aspects:
             if (aspect.get('planet1') == 'moon' and
@@ -268,7 +269,7 @@ class PatternMatcher:
                 pattern_target_sign = pattern.get('target_sign')
                 actual_target_sign = target_positions.get('sign') if target_positions else None
 
-                if target_positions and actual_target_sign == pattern_target_sign:
+                if target_positions and actual_target_sign and pattern_target_sign and actual_target_sign.lower() == pattern_target_sign.lower():
                     score += 0.3
                     logger.info(f"🪐 Target planet sign MATCH: {pattern_target} in {actual_target_sign}")
                 else:
