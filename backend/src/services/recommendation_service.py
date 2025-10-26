@@ -298,53 +298,93 @@ class AstroCalculator:
             self.encoder = None
 
     def get_astro_forecast(self, start_date: datetime, days: int = 30) -> List[AstroCondition]:
-        """Get astrological conditions for the next N days"""
-        if not self.encoder:
-            logger.warning("AstroEncoder not available, returning empty forecast")
-            return []
-
+        """Get astrological conditions for the next N days using database tables"""
         forecast = []
-        current_date = start_date
+        current_date = start_date.date()
 
         for _ in range(days):
             try:
-                astro_data = self.encoder.encode_date(current_date)
+                # Get planetary positions from database
+                conn = get_db_connection()
+                cursor = conn.cursor()
 
-                if astro_data:
-                    # Extract moon sign
-                    moon_sign = None
-                    if astro_data.positions and 'moon' in astro_data.positions:
-                        moon_sign = astro_data.positions['moon'].sign
+                # Get all planetary positions for this date
+                cursor.execute("""
+                    SELECT planet, longitude, zodiac_sign, degree_in_sign
+                    FROM daily_planetary_positions
+                    WHERE trade_date = %s
+                """, (current_date,))
 
-                    # Extract ALL planetary positions for pattern matching
-                    planetary_positions = {}
-                    if astro_data.positions:
-                        for planet_name, position in astro_data.positions.items():
-                            planetary_positions[planet_name] = {
-                                'sign': position.sign,
-                                'longitude': position.longitude,
-                                'degree_in_sign': position.degree_in_sign
-                            }
+                positions_data = cursor.fetchall()
+                planetary_positions = {}
+                moon_sign = None
 
-                    # Extract aspects
-                    aspects = []
-                    if astro_data.aspects:
-                        for aspect in astro_data.aspects:
+                for planet, longitude, zodiac_sign, degree_in_sign in positions_data:
+                    planetary_positions[planet] = {
+                        'sign': zodiac_sign,
+                        'longitude': float(longitude),
+                        'degree_in_sign': float(degree_in_sign)
+                    }
+                    if planet == 'moon':
+                        moon_sign = zodiac_sign
+
+                # Get existing aspects from database (removing exactness column)
+                cursor.execute("""
+                    SELECT planet1, planet2, aspect_type, orb
+                    FROM daily_planetary_aspects
+                    WHERE trade_date = %s
+                """, (current_date,))
+
+                aspects_data = cursor.fetchall()
+                aspects = []
+
+                for planet1, planet2, aspect_type, orb in aspects_data:
+                    aspects.append({
+                        'planet1': planet1,
+                        'planet2': planet2,
+                        'aspect_type': aspect_type,
+                        'orb': float(orb),
+                        'exactness': 1.0 - (float(orb) / 13.0) if orb <= 13.0 else 0.0  # Calculate based on orb
+                    })
+
+                # Check for Moon-Pluto conjunction within 13 degrees (Moon's daily travel)
+                if 'moon' in planetary_positions and 'pluto' in planetary_positions:
+                    moon_lon = planetary_positions['moon']['longitude']
+                    pluto_lon = planetary_positions['pluto']['longitude']
+
+                    # Calculate angular distance
+                    angle_diff = abs(moon_lon - pluto_lon)
+                    if angle_diff > 180:
+                        angle_diff = 360 - angle_diff
+
+                    # If within 13 degrees, add as potential conjunction
+                    if angle_diff <= 13.0:
+                        # Check if we already have this aspect
+                        has_moon_pluto = any(
+                            (a['planet1'] == 'moon' and a['planet2'] == 'pluto') or
+                            (a['planet1'] == 'pluto' and a['planet2'] == 'moon')
+                            for a in aspects
+                        )
+
+                        if not has_moon_pluto:
                             aspects.append({
-                                'planet1': aspect.planet1,
-                                'planet2': aspect.planet2,
-                                'aspect_type': aspect.aspect_type,
-                                'orb': aspect.orb,
-                                'exactness': aspect.exactness
+                                'planet1': 'moon',
+                                'planet2': 'pluto',
+                                'aspect_type': 'conjunction',
+                                'orb': angle_diff,
+                                'exactness': 1.0 - (angle_diff / 13.0)  # Higher exactness = closer
                             })
 
-                    forecast.append(AstroCondition(
-                        date=current_date.strftime('%Y-%m-%d'),
-                        moon_sign=moon_sign,
-                        planetary_positions=planetary_positions,
-                        aspects=aspects,
-                        significant_events=astro_data.significant_events or []
-                    ))
+                cursor.close()
+                conn.close()
+
+                forecast.append(AstroCondition(
+                    date=current_date.strftime('%Y-%m-%d'),
+                    moon_sign=moon_sign,
+                    planetary_positions=planetary_positions,
+                    aspects=aspects,
+                    significant_events=[]
+                ))
 
             except Exception as e:
                 logger.warning(f"Failed to get astro data for {current_date}: {e}")
