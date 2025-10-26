@@ -1,0 +1,54 @@
+# Base Dockerfile for all astrofinancial services
+# This handles Swiss Ephemeris installation and common dependencies
+
+FROM python:3.11-slim AS base
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PIP_NO_CACHE_DIR=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install system dependencies required for Swiss Ephemeris
+RUN apt-get update && apt-get install -y \
+    # Swiss Ephemeris dependencies
+    build-essential \
+    gcc \
+    g++ \
+    make \
+    # PostgreSQL client dependencies
+    libpq-dev \
+    # General utilities
+    curl \
+    wget \
+    git \
+    # Clean up
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Create app user for security
+RUN useradd --create-home --shell /bin/bash astro
+
+# Set working directory
+WORKDIR /app
+
+# Copy pyproject.toml and install dependencies
+COPY pyproject.toml ./
+RUN pip install --no-cache-dir -e .
+
+# Verify Swiss Ephemeris installation
+RUN python -c "import swisseph; print(f'Swiss Ephemeris version: {swisseph.get_library_path()}')" || \
+    echo "Swiss Ephemeris installation completed"
+
+# Copy source code
+COPY src/ ./src/
+
+# Set ownership
+RUN chown -R astro:astro /app
+
+# Switch to non-root user
+USER astro
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1

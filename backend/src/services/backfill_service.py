@@ -140,8 +140,8 @@ def get_db_connection():
         password=os.getenv('DB_PASSWORD', '')
     )
 
-def validate_date_range(start_date: str, end_date: str) -> tuple:
-    """Validate and parse date range"""
+def validate_date_range(start_date: str, end_date: str, data_type: str = "market") -> tuple:
+    """Validate and parse date range. Allows future dates for astrological data."""
     try:
         start = datetime.strptime(start_date, '%Y-%m-%d')
         end = datetime.strptime(end_date, '%Y-%m-%d')
@@ -149,7 +149,8 @@ def validate_date_range(start_date: str, end_date: str) -> tuple:
         if start >= end:
             raise ValueError("start_date must be before end_date")
 
-        if end > datetime.now():
+        # Allow future dates for astrological data since Swiss Ephemeris can calculate them
+        if end > datetime.now() and data_type != "astro":
             raise ValueError("end_date cannot be in the future")
 
         return start, end
@@ -237,8 +238,8 @@ async def health_check():
 async def start_backfill(request: BackfillRequest, background_tasks: BackgroundTasks):
     """Start a backfill operation"""
 
-    # Validate date range
-    start_dt, end_dt = validate_date_range(request.start_date, request.end_date)
+    # Validate date range (allow future dates for astrological data)
+    start_dt, end_dt = validate_date_range(request.start_date, request.end_date, request.type)
 
     # Generate request ID
     request_id = f"{request.type}_{request.symbol or 'all'}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -488,7 +489,7 @@ async def backfill_astro_data(request_id: str, request: BackfillRequest) -> int:
             trade_date = astro_data.date.date()
 
             # Insert planetary positions
-            for planet_name, position in astro_data.planetary_positions.items():
+            for planet_name, position in astro_data.positions.items():
                 try:
                     cursor.execute("""
                         INSERT INTO daily_planetary_positions (
@@ -519,7 +520,7 @@ async def backfill_astro_data(request_id: str, request: BackfillRequest) -> int:
                     cursor.execute("""
                         INSERT INTO daily_planetary_aspects (
                             trade_date, planet1, planet2, aspect_type, orb,
-                            exactness, separating_angle, applying_separating, created_at
+                            exactness, angle, applying_separating, created_at
                         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
                         ON CONFLICT (trade_date, planet1, planet2, aspect_type) DO NOTHING
                     """, (
@@ -529,7 +530,7 @@ async def backfill_astro_data(request_id: str, request: BackfillRequest) -> int:
                         aspect.aspect_type,
                         aspect.orb,
                         aspect.exactness,
-                        aspect.separating_angle,
+                        aspect.angle,
                         aspect.applying_separating
                     ))
 

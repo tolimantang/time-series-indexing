@@ -1,0 +1,116 @@
+---
+# Recommendation Service - Docker-based deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recommendation-service
+  namespace: time-series-indexing
+  labels:
+    app: recommendation-service
+    version: v2
+    deployment-type: docker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: recommendation-service
+  template:
+    metadata:
+      labels:
+        app: recommendation-service
+        version: v2
+        deployment-type: docker
+    spec:
+      containers:
+      - name: recommendation-service
+        image: your-account-id.dkr.ecr.us-west-1.amazonaws.com/astrofinancial-recommendation-service:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8002
+          name: http
+          protocol: TCP
+
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-user
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-name
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: market-encoder-secrets
+              key: db-password
+        - name: DB_PORT
+          value: "5432"
+        - name: SERVICE_NAME
+          value: "recommendation-service"
+        - name: PYTHONPATH
+          value: "/app/src"
+
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        # Resource limits
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+
+        # Security context
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          readOnlyRootFilesystem: false
+          allowPrivilegeEscalation: false
+
+      restartPolicy: Always
+
+---
+# Service to expose the recommendation service
+apiVersion: v1
+kind: Service
+metadata:
+  name: recommendation-service
+  namespace: time-series-indexing
+  labels:
+    app: recommendation-service
+    deployment-type: docker
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8002
+    targetPort: 8002
+    protocol: TCP
+    name: http
+  selector:
+    app: recommendation-service

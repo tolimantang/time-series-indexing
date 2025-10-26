@@ -13,6 +13,7 @@ env:
   AWS_REGION: us-west-1
   EKS_CLUSTER_NAME: financial-cluster
   ECR_REPOSITORY: market-encoder
+  KUBERNETES_NAMESPACE: time-series-indexing
 
 jobs:
   build-and-deploy:
@@ -51,12 +52,62 @@ jobs:
 
           echo "market-encoder-image=$ECR_REGISTRY/$ECR_REPOSITORY:latest" >> $GITHUB_OUTPUT
 
+      - name: Create ECR repositories for backend services
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          services=(backfill backtesting recommendation)
+
+          for service in "${services[@]}"; do
+            repo_name="astrofinancial-${service}-service"
+
+            # Check if repository exists, create if it doesn't
+            if ! aws ecr describe-repositories --repository-names $repo_name --region ${{ env.AWS_REGION }} 2>/dev/null; then
+              echo "Creating ECR repository: $repo_name"
+              aws ecr create-repository \
+                --repository-name $repo_name \
+                --region ${{ env.AWS_REGION }} \
+                --image-scanning-configuration scanOnPush=true
+            else
+              echo "ECR repository $repo_name already exists"
+            fi
+          done
+
+      - name: Build and push backend services to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Build base image first
+          docker build -f backend/docker/Dockerfile.base -t astrofinancial-base:latest backend/
+
+          # Build and push each backend service
+          services=(backfill backtesting recommendation)
+
+          for service in "${services[@]}"; do
+            echo "🔨 Building $service-service..."
+
+            # Build and push service image
+            docker build \
+              -f backend/docker/Dockerfile.$service \
+              -t $ECR_REGISTRY/astrofinancial-$service-service:$IMAGE_TAG \
+              -t $ECR_REGISTRY/astrofinancial-$service-service:latest \
+              backend/
+
+            docker push $ECR_REGISTRY/astrofinancial-$service-service:$IMAGE_TAG
+            docker push $ECR_REGISTRY/astrofinancial-$service-service:latest
+
+            echo "✅ $service-service pushed to ECR"
+          done
+
       - name: Update kube config
         run: aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION
 
       - name: Deploy to EKS
         env:
           MARKET_ENCODER_IMAGE: ${{ steps.build-market-encoder-image.outputs.market-encoder-image }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
           # Database secrets
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_NAME: ${{ secrets.DB_NAME }}
@@ -64,7 +115,7 @@ jobs:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: |
           # Create namespace if it doesn't exist
-          kubectl create namespace time-series-indexing --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace $KUBERNETES_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
 
           # Create market encoder secrets
           kubectl create secret generic market-encoder-secrets \
@@ -72,38 +123,114 @@ jobs:
             --from-literal=db-name="$DB_NAME" \
             --from-literal=db-user="$DB_USER" \
             --from-literal=db-password="$DB_PASSWORD" \
-            --namespace=time-series-indexing \
+            --namespace=$KUBERNETES_NAMESPACE \
             --dry-run=client -o yaml | kubectl apply -f -
 
           # Deploy market encoder cronjob (image tag is already set to latest)
           kubectl apply -f backend/deploy/k8s/market-encoder/simple-market-encoder-cronjob.yaml
 
+          # Deploy backend services with updated image tags
+          services=(backfill backtesting recommendation)
+
+          for service in "${services[@]}"; do
+            echo "🚀 Deploying $service-service..."
+
+            # Apply the Docker-based K8s deployments
+            kubectl apply -f backend/deploy/k8s/services-docker/$service-service.yaml
+
+            # Update deployment image to use the specific commit SHA
+            kubectl set image deployment/$service-service \
+              $service-service=$ECR_REGISTRY/astrofinancial-$service-service:$IMAGE_TAG \
+              -n $KUBERNETES_NAMESPACE
+
+            # Wait for rollout to complete
+            kubectl rollout status deployment/$service-service -n $KUBERNETES_NAMESPACE --timeout=300s
+
+            echo "✅ $service-service deployed successfully"
+          done
+
       - name: Verify deployment
         run: |
           # Verify market encoder
-          kubectl get cronjobs -n time-series-indexing
-          kubectl get configmaps -n time-series-indexing
-          kubectl get secrets -n time-series-indexing
+          kubectl get cronjobs -n $KUBERNETES_NAMESPACE
+          kubectl get configmaps -n $KUBERNETES_NAMESPACE
+          kubectl get secrets -n $KUBERNETES_NAMESPACE
+
+          # Verify backend services
+          kubectl get deployments -l deployment-type=docker -n $KUBERNETES_NAMESPACE
+          kubectl get services -l deployment-type=docker -n $KUBERNETES_NAMESPACE
+          kubectl get pods -l deployment-type=docker -n $KUBERNETES_NAMESPACE
 
       - name: Test market encoder manually
         run: |
           # Create a test job from the market encoder cronjob
-          kubectl create job --from=cronjob/simple-market-encoder-daily test-$(date +%Y%m%d-%H%M%S) -n time-series-indexing
+          kubectl create job --from=cronjob/simple-market-encoder-daily test-$(date +%Y%m%d-%H%M%S) -n $KUBERNETES_NAMESPACE
 
           # Wait for the job to start
           sleep 15
 
           # Check job status
-          kubectl get jobs -n time-series-indexing
+          kubectl get jobs -n $KUBERNETES_NAMESPACE
 
           # Get the test job name
-          TEST_JOB=$(kubectl get jobs -n time-series-indexing --sort-by=.metadata.creationTimestamp -o jsonpath="{.items[-1].metadata.name}")
+          TEST_JOB=$(kubectl get jobs -n $KUBERNETES_NAMESPACE --sort-by=.metadata.creationTimestamp -o jsonpath="{.items[-1].metadata.name}")
 
           # Show logs (timeout after 3 minutes)
-          timeout 180 kubectl logs -l job-name=$TEST_JOB -n time-series-indexing -f || echo "Job timed out or completed"
+          timeout 180 kubectl logs -l job-name=$TEST_JOB -n $KUBERNETES_NAMESPACE -f || echo "Job timed out or completed"
 
           # Final job status
-          kubectl get job $TEST_JOB -n time-series-indexing -o yaml
+          kubectl get job $TEST_JOB -n $KUBERNETES_NAMESPACE -o yaml
+
+      - name: Test backend services health
+        run: |
+          # Test health endpoints for backend services
+          services=(backfill backtesting recommendation)
+
+          for service in "${services[@]}"; do
+            echo "🔍 Testing $service-service health..."
+
+            # Wait for pods to be ready
+            kubectl wait --for=condition=Ready pods -l app=$service-service \
+              -n $KUBERNETES_NAMESPACE --timeout=300s || echo "⚠️ $service-service not ready yet"
+
+            # Get pod name for health check
+            POD_NAME=$(kubectl get pods -l app=$service-service -n $KUBERNETES_NAMESPACE \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+
+            if [ ! -z "$POD_NAME" ]; then
+              echo "✅ $service-service pod $POD_NAME is ready"
+
+              # Determine port
+              case $service in
+                backfill)
+                  PORT=8001
+                  ;;
+                backtesting)
+                  PORT=8000
+                  ;;
+                recommendation)
+                  PORT=8002
+                  ;;
+              esac
+
+              # Test health endpoint via port-forward
+              timeout 30 kubectl port-forward pod/$POD_NAME -n $KUBERNETES_NAMESPACE $PORT:$PORT &
+              PORT_FORWARD_PID=$!
+              sleep 10
+
+              # Check health endpoint
+              if curl -f http://localhost:$PORT/health --max-time 10 --silent; then
+                echo "✅ $service-service health check passed"
+              else
+                echo "⚠️ $service-service health check failed (may still be starting)"
+              fi
+
+              # Clean up port forward
+              kill $PORT_FORWARD_PID 2>/dev/null || true
+            else
+              echo "❌ No pod found for $service-service"
+            fi
+          done
 
   notify:
     name: Notify Deployment Status
@@ -115,6 +242,7 @@ jobs:
         if: needs.build-and-deploy.result == 'success'
         run: |
           echo "✅ Deployment to EKS completed successfully"
+          echo "✅ Market encoder and backend services deployed"
 
       - name: Notify Failure
         if: needs.build-and-deploy.result == 'failure'

@@ -1,0 +1,15 @@
+# Dockerfile for Backtesting Service
+FROM astrofinancial-base:latest
+
+# Set service-specific environment variables
+ENV PORT=8000
+ENV SERVICE_NAME=backtesting-service
+
+# Expose port
+EXPOSE 8000
+
+# Add service-specific Python path
+ENV PYTHONPATH=/app/src
+
+# Run the service
+CMD ["python", "-m", "uvicorn", "services.backtesting_service:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info"]

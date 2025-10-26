@@ -1,0 +1,15 @@
+# Dockerfile for Backfill Service
+FROM astrofinancial-base:latest
+
+# Set service-specific environment variables
+ENV PORT=8001
+ENV SERVICE_NAME=backfill-service
+
+# Expose port
+EXPOSE 8001
+
+# Add service-specific Python path
+ENV PYTHONPATH=/app/src
+
+# Run the service
+CMD ["python", "-m", "uvicorn", "services.backfill_service:app", "--host", "0.0.0.0", "--port", "8001", "--log-level", "info"]

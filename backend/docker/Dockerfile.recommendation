@@ -1,0 +1,15 @@
+# Dockerfile for Recommendation Service
+FROM astrofinancial-base:latest
+
+# Set service-specific environment variables
+ENV PORT=8002
+ENV SERVICE_NAME=recommendation-service
+
+# Expose port
+EXPOSE 8002
+
+# Add service-specific Python path
+ENV PYTHONPATH=/app/src
+
+# Run the service
+CMD ["python", "-m", "uvicorn", "services.recommendation_service:app", "--host", "0.0.0.0", "--port", "8002", "--log-level", "info"]

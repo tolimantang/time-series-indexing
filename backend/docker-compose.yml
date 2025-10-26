@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  # Base image build
+  astrofinancial-base:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.base
+    image: astrofinancial-base:latest
+    command: ["echo", "Base image built successfully"]
+
+  # Backfill Service
+  backfill-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backfill
+    image: astrofinancial/backfill-service:latest
+    ports:
+      - "8001:8001"
+    environment:
+      - DB_HOST=${DB_HOST:-localhost}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=${DB_NAME:-astrofinancial}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-}
+    depends_on:
+      - astrofinancial-base
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Backtesting Service
+  backtesting-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backtesting
+    image: astrofinancial/backtesting-service:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=${DB_HOST:-localhost}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=${DB_NAME:-astrofinancial}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-}
+    depends_on:
+      - astrofinancial-base
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Recommendation Service
+  recommendation-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.recommendation
+    image: astrofinancial/recommendation-service:latest
+    ports:
+      - "8002:8002"
+    environment:
+      - DB_HOST=${DB_HOST:-localhost}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=${DB_NAME:-astrofinancial}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-}
+    depends_on:
+      - astrofinancial-base
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  default:
+    name: astrofinancial-network
