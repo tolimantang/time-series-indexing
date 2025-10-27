@@ -62,6 +62,42 @@ class PatternSummary(BaseModel):
     best_pattern_name: str
     analysis_date: str
 
+class PlanetaryBacktestRequest(BaseModel):
+    symbol: str = Field(..., description="Trading symbol (e.g., PL=F)")
+    market_name: str = Field(..., description="Market name (e.g., PLATINUM)")
+    planet1: str = Field(..., description="First planet (e.g., Jupiter)")
+    planet2: str = Field(..., description="Second planet (e.g., Mars)")
+    aspect_types: Optional[List[str]] = Field(None, description="Aspect types (e.g., ['trine']). If None, uses all major aspects")
+    orb_size: float = Field(8.0, description="Orb size in degrees")
+    start_date: str = Field(..., description="Start date for backtest (YYYY-MM-DD)")
+    end_date: str = Field(..., description="End date for backtest (YYYY-MM-DD)")
+
+class PlanetaryBacktestResult(BaseModel):
+    phase: str  # "approaching" or "separating"
+    entry_date: str
+    exit_date: str
+    entry_price: float
+    exit_price: float
+    return_pct: float
+    holding_days: int
+    aspect_info: Dict[str, Any]
+
+class PlanetaryBacktestResponse(BaseModel):
+    request_id: str
+    status: str
+    message: str
+    symbol: str
+    planet1: str
+    planet2: str
+    aspect_types: List[str]
+    orb_size: float
+    total_aspects_found: int
+    approaching_phase_results: List[PlanetaryBacktestResult]
+    separating_phase_results: List[PlanetaryBacktestResult]
+    summary_stats: Dict[str, Any]
+    execution_time_seconds: float
+    insights_saved: bool  # Whether results were saved to astrological_insights table
+
 # In-memory storage for request tracking (in production, use Redis/DB)
 active_requests: Dict[str, Dict] = {}
 
