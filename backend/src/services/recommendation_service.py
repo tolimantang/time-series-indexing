@@ -4,11 +4,13 @@ Recommendation Service
 
 Provides trading recommendations based on astrological patterns, combining:
 - Validated lunar patterns from backtesting results
+- Validated planetary aspect patterns from astrological insights
 - Current and future astrological conditions (30-day forecast)
 - LLM-powered reasoning for strategic recommendations
 
 Features:
 - Pattern matching against historical lunar patterns
+- Planetary aspect insights from pre-computed backtests
 - 30-day astrological forecast
 - AI-powered recommendation synthesis
 - Position entry/exit timing suggestions
@@ -288,6 +290,55 @@ class PatternMatcher:
                     logger.info(f"🪐 Target planet sign mismatch: {pattern_target} in {actual_target_sign} != {pattern_target_sign}")
 
         return score / max(total_factors, 1) if total_factors > 0 else 0.0
+
+    def get_planetary_insights(self, market_symbol: str, min_accuracy: float = 0.70) -> List[Dict]:
+        """Get validated planetary patterns from astrological_insights table"""
+        cursor = self.conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                pattern_name,
+                planet1,
+                planet2,
+                aspect_type,
+                phase,
+                accuracy_rate,
+                avg_return_pct,
+                win_rate,
+                total_trades,
+                avg_holding_days,
+                best_return_pct,
+                worst_return_pct,
+                created_at
+            FROM astrological_insights
+            WHERE market_symbol = %s
+              AND accuracy_rate >= %s
+              AND total_trades >= 5
+            ORDER BY accuracy_rate DESC, avg_return_pct DESC
+        """, (market_symbol, min_accuracy))
+
+        patterns = []
+        for row in cursor.fetchall():
+            patterns.append({
+                'pattern_name': row[0],
+                'planet1': row[1],
+                'planet2': row[2],
+                'aspect_type': row[3],
+                'phase': row[4],
+                'accuracy_rate': float(row[5]),
+                'avg_return_pct': float(row[6]) if row[6] else 0.0,
+                'win_rate': float(row[7]),
+                'total_trades': row[8],
+                'avg_holding_days': float(row[9]) if row[9] else 0.0,
+                'best_return_pct': float(row[10]) if row[10] else 0.0,
+                'worst_return_pct': float(row[11]) if row[11] else 0.0,
+                'created_at': row[12],
+                'pattern_type': 'planetary'
+            })
+
+        cursor.close()
+        logger.info(f"🪐 Found {len(patterns)} validated planetary patterns above {min_accuracy:.1%} accuracy")
+        return patterns
 
 class AstroCalculator:
     """Calculate current and future astrological conditions"""
@@ -588,10 +639,20 @@ async def get_recommendation(request: RecommendationRequest):
         astro_calculator = AstroCalculator()
         llm_engine = LLMRecommendationEngine()
 
-        # Get validated patterns
+        # Get validated patterns (both lunar and planetary)
         market_symbol = f"{request.market_name}_DAILY"
-        patterns = pattern_matcher.get_validated_patterns(market_symbol, request.min_accuracy)
-        logger.info(f"📊 Found {len(patterns)} validated patterns above {request.min_accuracy:.1%} accuracy")
+
+        # Get lunar patterns
+        lunar_patterns = pattern_matcher.get_validated_patterns(market_symbol, request.min_accuracy)
+        logger.info(f"🌙 Found {len(lunar_patterns)} validated lunar patterns above {request.min_accuracy:.1%} accuracy")
+
+        # Get planetary insights
+        planetary_patterns = pattern_matcher.get_planetary_insights(market_symbol, request.min_accuracy)
+        logger.info(f"🪐 Found {len(planetary_patterns)} validated planetary patterns above {request.min_accuracy:.1%} accuracy")
+
+        # Combine all patterns
+        patterns = lunar_patterns + planetary_patterns
+        logger.info(f"📊 Total {len(patterns)} validated patterns ({len(lunar_patterns)} lunar + {len(planetary_patterns)} planetary)")
 
         # Get current astrological conditions
         today = datetime.now()

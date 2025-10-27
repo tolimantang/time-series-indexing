@@ -26,6 +26,11 @@ import pandas as pd
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'llm_analyzer'))
 from enhanced_daily_lunar_tester import EnhancedDailyLunarTester
 
+# Swiss Ephemeris for planetary calculations
+import swisseph as swe
+import yfinance as yf
+from datetime import timedelta
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -36,13 +41,25 @@ app = FastAPI(
 )
 
 class BacktestRequest(BaseModel):
-    symbol: str = Field(..., description="Market symbol (e.g., PLATINUM_FUTURES)")
+    # Common fields for all backtest types
+    symbol: str = Field(..., description="Market symbol (e.g., PLATINUM_FUTURES, PL=F)")
     market_name: str = Field(..., description="Market name (e.g., PLATINUM)")
-    timing_type: str = Field(default="next_day", description="Timing type: same_day, next_day, or all")
     start_date: Optional[str] = Field(None, description="Start date (YYYY-MM-DD)")
     end_date: Optional[str] = Field(None, description="End date (YYYY-MM-DD)")
-    accuracy_threshold: Optional[float] = Field(0.65, description="Minimum accuracy threshold")
-    min_occurrences: Optional[int] = Field(5, description="Minimum pattern occurrences")
+
+    # Backtest type discriminator
+    backtest_type: str = Field(..., description="Type of backtest: 'lunar' or 'planetary'")
+
+    # Lunar-specific fields (only used when backtest_type='lunar')
+    timing_type: Optional[str] = Field("next_day", description="Lunar timing type: same_day, next_day, or all")
+    accuracy_threshold: Optional[float] = Field(0.65, description="Minimum accuracy threshold for lunar patterns")
+    min_occurrences: Optional[int] = Field(5, description="Minimum pattern occurrences for lunar patterns")
+
+    # Planetary-specific fields (only used when backtest_type='planetary')
+    planet1: Optional[str] = Field(None, description="First planet (e.g., jupiter)")
+    planet2: Optional[str] = Field(None, description="Second planet (e.g., mars)")
+    aspect_types: Optional[List[str]] = Field(None, description="Aspect types (e.g., ['trine']). If None, uses all major aspects")
+    orb_size: Optional[float] = Field(8.0, description="Orb size in degrees for planetary aspects")
 
 class BacktestResponse(BaseModel):
     request_id: str
@@ -98,6 +115,336 @@ class PlanetaryBacktestResponse(BaseModel):
     execution_time_seconds: float
     insights_saved: bool  # Whether results were saved to astrological_insights table
 
+class PlanetaryBacktester:
+    """Planetary aspect backtesting with two-phase strategy (approaching vs separating)"""
+
+    def __init__(self):
+        # Swiss Ephemeris planet constants
+        self.planet_constants = {
+            'sun': swe.SUN,
+            'moon': swe.MOON,
+            'mercury': swe.MERCURY,
+            'venus': swe.VENUS,
+            'mars': swe.MARS,
+            'jupiter': swe.JUPITER,
+            'saturn': swe.SATURN,
+            'uranus': swe.URANUS,
+            'neptune': swe.NEPTUNE,
+            'pluto': swe.PLUTO
+        }
+
+        # Major aspects in degrees
+        self.aspects = {
+            'conjunction': 0,
+            'sextile': 60,
+            'square': 90,
+            'trine': 120,
+            'opposition': 180
+        }
+
+    def run_backtest(self, symbol: str, market_name: str, planet1: str, planet2: str,
+                    aspect_types: List[str], orb_size: float, start_date: str, end_date: str):
+        """Run complete planetary backtest with two-phase strategy"""
+
+        logger.info(f"🪐 Starting planetary backtest: {planet1}-{planet2} for {symbol}")
+
+        # Get market data
+        market_data = self._get_market_data(symbol, start_date, end_date)
+        if market_data.empty:
+            raise ValueError(f"No market data found for {symbol} in the date range")
+
+        # Use all major aspects if none specified
+        if not aspect_types:
+            aspect_types = list(self.aspects.keys())
+
+        results = {}
+
+        # Run backtest for each aspect type
+        for aspect_type in aspect_types:
+            logger.info(f"📐 Testing {aspect_type} aspect ({self.aspects[aspect_type]}°)")
+
+            # Find aspect periods
+            aspect_periods = self._find_aspect_periods(
+                planet1, planet2, aspect_type, orb_size, start_date, end_date
+            )
+
+            if not aspect_periods:
+                logger.warning(f"No {aspect_type} aspects found for {planet1}-{planet2}")
+                continue
+
+            # Run two-phase backtesting
+            approaching_results = self._backtest_phase(
+                market_data, aspect_periods, "approaching"
+            )
+            separating_results = self._backtest_phase(
+                market_data, aspect_periods, "separating"
+            )
+
+            results[aspect_type] = {
+                'approaching_phase': approaching_results,
+                'separating_phase': separating_results,
+                'total_aspects': len(aspect_periods)
+            }
+
+            # Store results in astrological_insights table
+            self._store_results(
+                symbol, market_name, planet1, planet2, aspect_type, orb_size,
+                start_date, end_date, approaching_results, separating_results
+            )
+
+        return results
+
+    def _get_market_data(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """Get market data from database or yfinance"""
+        try:
+            # First try database
+            conn = get_db_connection()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT trade_date, open_price, high_price, low_price, close_price, volume
+                FROM market_data
+                WHERE symbol = %s AND trade_date BETWEEN %s AND %s
+                ORDER BY trade_date
+            """, (symbol, start_date, end_date))
+
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+
+            if rows:
+                df = pd.DataFrame(rows, columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
+                df['Date'] = pd.to_datetime(df['Date'])
+                df.set_index('Date', inplace=True)
+                return df
+
+        except Exception as e:
+            logger.warning(f"Database lookup failed: {e}, trying yfinance")
+
+        # Fallback to yfinance
+        try:
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(start=start_date, end=end_date)
+            return df
+        except Exception as e:
+            logger.error(f"Failed to get market data: {e}")
+            return pd.DataFrame()
+
+    def _find_aspect_periods(self, planet1: str, planet2: str, aspect_type: str,
+                           orb_size: float, start_date: str, end_date: str) -> List[Dict]:
+        """Find periods when planets are within orb of specific aspect"""
+
+        aspect_angle = self.aspects[aspect_type]
+        planet1_id = self.planet_constants[planet1.lower()]
+        planet2_id = self.planet_constants[planet2.lower()]
+
+        periods = []
+        current_period = None
+
+        # Check each day for aspect within orb
+        current_date = pd.to_datetime(start_date)
+        end_dt = pd.to_datetime(end_date)
+
+        while current_date <= end_dt:
+            try:
+                # Calculate Julian day
+                jd = swe.julday(current_date.year, current_date.month, current_date.day, 12.0)
+
+                # Get planetary positions
+                pos1, _ = swe.calc_ut(jd, planet1_id)
+                pos2, _ = swe.calc_ut(jd, planet2_id)
+
+                # Calculate angular difference
+                angle_diff = abs(pos1[0] - pos2[0])
+                if angle_diff > 180:
+                    angle_diff = 360 - angle_diff
+
+                # Check if within orb of aspect
+                orb_distance = abs(angle_diff - aspect_angle)
+                if orb_distance > 180:
+                    orb_distance = 360 - orb_distance
+
+                if orb_distance <= orb_size:
+                    if current_period is None:
+                        # Start new period
+                        current_period = {
+                            'start_date': current_date,
+                            'orb_entry': current_date,
+                            'exact_date': None,
+                            'orb_exit': None,
+                            'min_orb_distance': orb_distance
+                        }
+                    else:
+                        # Update existing period
+                        if orb_distance < current_period['min_orb_distance']:
+                            current_period['min_orb_distance'] = orb_distance
+                            current_period['exact_date'] = current_date
+                else:
+                    if current_period is not None:
+                        # End current period
+                        current_period['orb_exit'] = current_date - timedelta(days=1)
+                        current_period['end_date'] = current_period['orb_exit']
+                        periods.append(current_period)
+                        current_period = None
+
+            except Exception as e:
+                logger.warning(f"Swiss Ephemeris calculation failed for {current_date}: {e}")
+
+            current_date += timedelta(days=1)
+
+        # Close final period if still open
+        if current_period is not None:
+            current_period['orb_exit'] = current_date - timedelta(days=1)
+            current_period['end_date'] = current_period['orb_exit']
+            periods.append(current_period)
+
+        logger.info(f"Found {len(periods)} {aspect_type} aspect periods")
+        return periods
+
+    def _backtest_phase(self, market_data: pd.DataFrame, aspect_periods: List[Dict], phase: str) -> Dict:
+        """Backtest specific phase (approaching or separating)"""
+
+        trades = []
+
+        for period in aspect_periods:
+            if phase == "approaching":
+                # Entry at orb start, exit at exact aspect
+                entry_date = period['orb_entry']
+                exit_date = period['exact_date'] or period['end_date']
+            else:  # separating
+                # Entry at exact aspect, exit at orb end
+                entry_date = period['exact_date'] or period['start_date']
+                exit_date = period['orb_exit'] or period['end_date']
+
+            # Find closest market data dates
+            entry_price, exit_price = self._get_trade_prices(market_data, entry_date, exit_date)
+
+            if entry_price and exit_price:
+                return_pct = ((exit_price - entry_price) / entry_price) * 100
+                holding_days = (exit_date - entry_date).days
+
+                trades.append({
+                    'entry_date': entry_date,
+                    'exit_date': exit_date,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'return_pct': return_pct,
+                    'holding_days': holding_days,
+                    'aspect_info': period
+                })
+
+        # Calculate statistics
+        if not trades:
+            return {
+                'total_trades': 0,
+                'avg_return_pct': 0,
+                'win_rate': 0,
+                'avg_holding_days': 0,
+                'best_return_pct': 0,
+                'worst_return_pct': 0,
+                'trades': []
+            }
+
+        returns = [t['return_pct'] for t in trades]
+        holding_days = [t['holding_days'] for t in trades]
+
+        return {
+            'total_trades': len(trades),
+            'avg_return_pct': sum(returns) / len(returns),
+            'win_rate': len([r for r in returns if r > 0]) / len(returns),
+            'avg_holding_days': sum(holding_days) / len(holding_days),
+            'best_return_pct': max(returns),
+            'worst_return_pct': min(returns),
+            'trades': trades
+        }
+
+    def _get_trade_prices(self, market_data: pd.DataFrame, entry_date, exit_date):
+        """Get entry and exit prices from market data"""
+        try:
+            # Find closest available dates
+            entry_price = None
+            exit_price = None
+
+            # Look for entry price (within 3 days)
+            for days_offset in range(4):
+                check_date = entry_date + timedelta(days=days_offset)
+                if check_date.date() in market_data.index.date:
+                    entry_price = market_data.loc[market_data.index.date == check_date.date(), 'Close'].iloc[0]
+                    break
+
+            # Look for exit price (within 3 days)
+            for days_offset in range(4):
+                check_date = exit_date + timedelta(days=days_offset)
+                if check_date.date() in market_data.index.date:
+                    exit_price = market_data.loc[market_data.index.date == check_date.date(), 'Close'].iloc[0]
+                    break
+
+            return entry_price, exit_price
+
+        except Exception as e:
+            logger.warning(f"Price lookup failed: {e}")
+            return None, None
+
+    def _store_results(self, symbol: str, market_name: str, planet1: str, planet2: str,
+                      aspect_type: str, orb_size: float, start_date: str, end_date: str,
+                      approaching_results: Dict, separating_results: Dict):
+        """Store results in astrological_insights table"""
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Store approaching phase results
+        self._insert_phase_results(
+            cursor, symbol, market_name, planet1, planet2, aspect_type, orb_size,
+            start_date, end_date, "approaching", approaching_results
+        )
+
+        # Store separating phase results
+        self._insert_phase_results(
+            cursor, symbol, market_name, planet1, planet2, aspect_type, orb_size,
+            start_date, end_date, "separating", separating_results
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        logger.info(f"✅ Stored {aspect_type} results for {planet1}-{planet2}")
+
+    def _insert_phase_results(self, cursor, symbol: str, market_name: str, planet1: str, planet2: str,
+                             aspect_type: str, orb_size: float, start_date: str, end_date: str,
+                             phase: str, results: Dict):
+        """Insert phase-specific results into astrological_insights table"""
+
+        pattern_name = f"{planet1.title()}-{planet2.title()} {aspect_type.title()} {phase.title()} Phase"
+
+        cursor.execute("""
+            INSERT INTO astrological_insights (
+                market_symbol, symbol, planet1, planet2, aspect_type, orb_size,
+                start_date, end_date, phase, total_trades, avg_return_pct, win_rate,
+                avg_holding_days, best_return_pct, worst_return_pct, accuracy_rate,
+                pattern_name, total_aspects_found, backtest_version
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            ON CONFLICT (market_symbol, planet1, planet2, aspect_type, phase, orb_size, start_date, end_date)
+            DO UPDATE SET
+                total_trades = EXCLUDED.total_trades,
+                avg_return_pct = EXCLUDED.avg_return_pct,
+                win_rate = EXCLUDED.win_rate,
+                avg_holding_days = EXCLUDED.avg_holding_days,
+                best_return_pct = EXCLUDED.best_return_pct,
+                worst_return_pct = EXCLUDED.worst_return_pct,
+                accuracy_rate = EXCLUDED.accuracy_rate,
+                updated_at = CURRENT_TIMESTAMP
+        """, (
+            f"{market_name}_DAILY", symbol, planet1.lower(), planet2.lower(), aspect_type,
+            orb_size, start_date, end_date, phase, results['total_trades'],
+            results['avg_return_pct'], results['win_rate'], results['avg_holding_days'],
+            results['best_return_pct'], results['worst_return_pct'], results['win_rate'],
+            pattern_name, len(results.get('trades', [])), 'v1.0'
+        ))
+
 # In-memory storage for request tracking (in production, use Redis/DB)
 active_requests: Dict[str, Dict] = {}
 
@@ -142,21 +489,6 @@ def validate_market_data(symbol: str, market_name: str, start_date: str = None, 
                 'end_date': result[2]
             }
 
-        # Check market_data_intraday table
-        cursor.execute("""
-            SELECT COUNT(*), MIN(datetime::date), MAX(datetime::date)
-            FROM market_data_intraday
-            WHERE symbol = %s
-        """, (sym,))
-        result = cursor.fetchone()
-
-        if result and result[0] > 0:
-            data_found[f"{sym}_intraday"] = {
-                'table': 'market_data_intraday',
-                'count': result[0],
-                'start_date': result[1],
-                'end_date': result[2]
-            }
 
     cursor.close()
     conn.close()
@@ -223,17 +555,39 @@ async def health_check():
 
 @app.post("/backtest", response_model=BacktestResponse)
 async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTasks):
-    """Run backtesting analysis with real EnhancedDailyLunarTester"""
+    """Run backtesting analysis - handles both lunar and planetary backtests"""
 
-    # Validate timing_type
-    if request.timing_type not in ['same_day', 'next_day', 'all']:
+    # Validate backtest_type
+    if request.backtest_type not in ['lunar', 'planetary']:
         raise HTTPException(
             status_code=400,
-            detail="timing_type must be 'same_day', 'next_day', or 'all'"
+            detail="backtest_type must be 'lunar' or 'planetary'"
         )
 
+    # Validate type-specific required fields
+    if request.backtest_type == 'lunar':
+        if request.timing_type not in ['same_day', 'next_day', 'all']:
+            raise HTTPException(
+                status_code=400,
+                detail="timing_type must be 'same_day', 'next_day', or 'all' for lunar backtests"
+            )
+    elif request.backtest_type == 'planetary':
+        if not request.planet1 or not request.planet2:
+            raise HTTPException(
+                status_code=400,
+                detail="planet1 and planet2 are required for planetary backtests"
+            )
+        if not request.start_date or not request.end_date:
+            raise HTTPException(
+                status_code=400,
+                detail="start_date and end_date are required for planetary backtests"
+            )
+
     # Generate request ID
-    request_id = f"{request.symbol}_{request.timing_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    if request.backtest_type == 'lunar':
+        request_id = f"{request.symbol}_{request.timing_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    else:
+        request_id = f"{request.symbol}_{request.planet1}_{request.planet2}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     # Pre-validate data availability
     try:
@@ -271,13 +625,18 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
             message=f"Data validation failed: {str(e)}"
         )
 
-    # Run backtest in background
-    background_tasks.add_task(execute_real_backtest, request_id, request)
+    # Route to appropriate backtest handler
+    if request.backtest_type == 'lunar':
+        background_tasks.add_task(execute_lunar_backtest, request_id, request)
+        message = f"Lunar backtesting started for {request.market_name} ({request.timing_type}) with EnhancedDailyLunarTester"
+    else:
+        background_tasks.add_task(execute_planetary_backtest, request_id, request)
+        message = f"Planetary backtesting started for {request.market_name} ({request.planet1}-{request.planet2}) with PlanetaryBacktester"
 
     return BacktestResponse(
         request_id=request_id,
         status="accepted",
-        message=f"Real backtesting started for {request.market_name} ({request.timing_type}) with EnhancedDailyLunarTester",
+        message=message,
         data_summary=active_requests[request_id]["data_summary"]
     )
 
@@ -419,7 +778,7 @@ async def get_patterns_summary():
         logger.error(f"Failed to get pattern summary: {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
-async def execute_real_backtest(request_id: str, request: BacktestRequest):
+async def execute_lunar_backtest(request_id: str, request: BacktestRequest):
     """Execute real backtesting analysis using EnhancedDailyLunarTester"""
     try:
         active_requests[request_id]["status"] = "running"
@@ -527,6 +886,78 @@ async def execute_real_backtest(request_id: str, request: BacktestRequest):
         active_requests[request_id].update({
             "status": "failed",
             "message": f"Real analysis failed: {str(e)}"
+        })
+
+async def execute_planetary_backtest(request_id: str, request: BacktestRequest):
+    """Execute planetary backtesting analysis and store results in astrological_insights table"""
+    try:
+        active_requests[request_id]["status"] = "running"
+        active_requests[request_id]["message"] = f"Running planetary backtest for {request.planet1}-{request.planet2}..."
+
+        logger.info(f"🪐 Starting planetary backtest {request_id}: {request.symbol} ({request.planet1}-{request.planet2})")
+
+        start_time = datetime.now()
+
+        # Create PlanetaryBacktester instance
+        backtester = PlanetaryBacktester()
+
+        # Run the backtest
+        results = backtester.run_backtest(
+            symbol=request.symbol,
+            market_name=request.market_name,
+            planet1=request.planet1,
+            planet2=request.planet2,
+            aspect_types=request.aspect_types,
+            orb_size=request.orb_size,
+            start_date=request.start_date,
+            end_date=request.end_date
+        )
+
+        execution_time = (datetime.now() - start_time).total_seconds()
+
+        # Calculate summary statistics
+        total_aspects_found = sum(r.get('total_aspects', 0) for r in results.values())
+        total_trades = sum(r['approaching_phase']['total_trades'] + r['separating_phase']['total_trades']
+                          for r in results.values())
+
+        # Find best performing aspect/phase combination
+        best_performance = {'avg_return': -float('inf'), 'aspect': None, 'phase': None}
+        for aspect, data in results.items():
+            for phase in ['approaching_phase', 'separating_phase']:
+                phase_data = data[phase]
+                if phase_data['total_trades'] > 0 and phase_data['avg_return_pct'] > best_performance['avg_return']:
+                    best_performance.update({
+                        'avg_return': phase_data['avg_return_pct'],
+                        'aspect': aspect,
+                        'phase': phase.replace('_phase', ''),
+                        'win_rate': phase_data['win_rate'],
+                        'trades': phase_data['total_trades']
+                    })
+
+        # Update final status
+        active_requests[request_id].update({
+            "status": "completed",
+            "message": f"Planetary backtest completed. Found {total_aspects_found} aspect periods, {total_trades} total trades.",
+            "patterns_found": total_aspects_found,
+            "best_pattern": {
+                "name": f"{request.planet1.title()}-{request.planet2.title()} {best_performance['aspect'].title()} ({best_performance['phase'].title()})",
+                "avg_return": best_performance['avg_return'],
+                "win_rate": best_performance['win_rate'],
+                "trades": best_performance['trades']
+            } if best_performance['aspect'] else None,
+            "execution_time": execution_time,
+            "total_aspects": total_aspects_found,
+            "total_trades": total_trades,
+            "insights_saved": True
+        })
+
+        logger.info(f"✅ Completed planetary backtest {request_id}: {total_aspects_found} aspects, {total_trades} trades")
+
+    except Exception as e:
+        logger.error(f"❌ Planetary backtest {request_id} failed: {e}", exc_info=True)
+        active_requests[request_id].update({
+            "status": "failed",
+            "message": f"Planetary analysis failed: {str(e)}"
         })
 
 if __name__ == "__main__":
