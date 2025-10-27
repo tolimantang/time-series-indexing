@@ -25,6 +25,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -42,13 +45,16 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          # Build market encoder image
-          docker build -f backend/deploy/docker/market-encoder.Dockerfile -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG backend/
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-
-          # Also tag as latest
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          # Build market encoder image with buildx and cache
+          docker buildx build \
+            --platform linux/amd64 \
+            --cache-from type=registry,ref=$ECR_REGISTRY/$ECR_REPOSITORY:buildcache \
+            --cache-to type=registry,ref=$ECR_REGISTRY/$ECR_REPOSITORY:buildcache,mode=max \
+            -f backend/deploy/docker/market-encoder.Dockerfile \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            --push \
+            backend/
 
           echo "market-encoder-image=$ECR_REGISTRY/$ECR_REPOSITORY:latest" >> $GITHUB_OUTPUT
 
@@ -56,11 +62,10 @@ jobs:
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          services=(backfill backtesting recommendation)
+          # Include base image repository
+          repos=(astrofinancial-base astrofinancial-backfill-service astrofinancial-backtesting-service astrofinancial-recommendation-service)
 
-          for service in "${services[@]}"; do
-            repo_name="astrofinancial-${service}-service"
-
+          for repo_name in "${repos[@]}"; do
             # Check if repository exists, create if it doesn't
             if ! aws ecr describe-repositories --repository-names $repo_name --region ${{ env.AWS_REGION }} 2>/dev/null; then
               echo "Creating ECR repository: $repo_name"
@@ -78,30 +83,93 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          # Build base image first
-          docker build -f backend/docker/Dockerfile.base -t astrofinancial-base:latest backend/
+          # Build base image first with cache
+          docker buildx build \
+            --platform linux/amd64 \
+            --cache-from type=registry,ref=$ECR_REGISTRY/astrofinancial-base:buildcache \
+            --cache-to type=registry,ref=$ECR_REGISTRY/astrofinancial-base:buildcache,mode=max \
+            -f backend/docker/Dockerfile.base \
+            -t astrofinancial-base:latest \
+            --load \
+            backend/
 
-          # Build and push each backend service
+          # Build and push each backend service with cache
           services=(backfill backtesting recommendation)
 
           for service in "${services[@]}"; do
-            echo "🔨 Building $service-service..."
+            echo "🔨 Building $service-service with cache..."
 
-            # Build and push service image
-            docker build \
+            # Build and push service image with cache
+            docker buildx build \
+              --platform linux/amd64 \
+              --cache-from type=registry,ref=$ECR_REGISTRY/astrofinancial-$service-service:buildcache \
+              --cache-to type=registry,ref=$ECR_REGISTRY/astrofinancial-$service-service:buildcache,mode=max \
               -f backend/docker/Dockerfile.$service \
               -t $ECR_REGISTRY/astrofinancial-$service-service:$IMAGE_TAG \
               -t $ECR_REGISTRY/astrofinancial-$service-service:latest \
+              --push \
               backend/
-
-            docker push $ECR_REGISTRY/astrofinancial-$service-service:$IMAGE_TAG
-            docker push $ECR_REGISTRY/astrofinancial-$service-service:latest
 
             echo "✅ $service-service pushed to ECR"
           done
 
       - name: Update kube config
         run: aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION
+
+      - name: Check for SQL changes
+        id: sql-changes
+        run: |
+          echo "🔍 Checking for SQL migration changes..."
+          if git diff --name-only HEAD~1 HEAD | grep -q "backend/sql/flyway/"; then
+            echo "sql-changed=true" >> $GITHUB_OUTPUT
+            echo "✅ SQL migration files changed, will run migrations"
+          else
+            echo "sql-changed=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No SQL migration changes detected"
+          fi
+
+      - name: Run Database Migrations
+        if: steps.sql-changes.outputs.sql-changed == 'true'
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: |
+          echo "🗄️ Running database migrations with Flyway..."
+
+          # Install Flyway CLI
+          wget -qO- https://repo1.maven.org/maven2/org/flywaydb/flyway-commandline/10.0.1/flyway-commandline-10.0.1-linux-x64.tar.gz | tar -xzf -
+          sudo ln -s $(pwd)/flyway-10.0.1/flyway /usr/local/bin/
+
+          # Configure Flyway
+          cat > flyway.conf << EOF
+          flyway.url=jdbc:postgresql://${DB_HOST}:5432/${DB_NAME}
+          flyway.user=${DB_USER}
+          flyway.password=${DB_PASSWORD}
+          flyway.locations=filesystem:backend/sql/flyway
+          flyway.sqlMigrationPrefix=V
+          flyway.sqlMigrationSeparator=__
+          flyway.sqlMigrationSuffixes=.sql
+          flyway.cleanDisabled=true
+          flyway.validateOnMigrate=true
+          EOF
+
+          # Show current schema info
+          echo "📊 Current migration status:"
+          flyway -configFiles=flyway.conf info || echo "No migrations applied yet"
+
+          # Run migrations
+          echo "🚀 Applying pending migrations..."
+          flyway -configFiles=flyway.conf migrate
+
+          # Show final status
+          echo "✅ Migration completed. Final status:"
+          flyway -configFiles=flyway.conf info
+
+      - name: Skip Database Migrations
+        if: steps.sql-changes.outputs.sql-changed == 'false'
+        run: echo "⏭️ Skipping database migrations - no SQL changes detected"
 
       - name: Deploy to EKS
         env:
