@@ -439,10 +439,10 @@ class PlanetaryBacktester:
                 updated_at = CURRENT_TIMESTAMP
         """, (
             f"{market_name}_DAILY", symbol, planet1.lower(), planet2.lower(), aspect_type,
-            orb_size, start_date, end_date, phase, results['total_trades'],
-            results['avg_return_pct'], results['win_rate'], results['avg_holding_days'],
-            results['best_return_pct'], results['worst_return_pct'], results['win_rate'],
-            pattern_name, len(results.get('trades', [])), 'v1.0'
+            float(orb_size), start_date, end_date, phase, int(results['total_trades']),
+            float(results['avg_return_pct']), float(results['win_rate']), float(results['avg_holding_days']),
+            float(results['best_return_pct']), float(results['worst_return_pct']), float(results['win_rate']),
+            pattern_name, int(len(results.get('trades', []))), 'v1.0'
         ))
 
 # In-memory storage for request tracking (in production, use Redis/DB)
