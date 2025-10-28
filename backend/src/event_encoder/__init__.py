@@ -1,0 +1,1 @@
+# Event encoder package for financial events data processing
