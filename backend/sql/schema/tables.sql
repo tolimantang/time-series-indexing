@@ -103,6 +103,60 @@ CREATE TABLE lunar_patterns (
     CONSTRAINT lunar_patterns_unique_pattern UNIQUE(pattern_name, market_symbol, timing_type)
 );
 
+-- Planetary Pattern Analysis Tables
+-- =================================
+
+CREATE TABLE planetary_patterns (
+    id SERIAL PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    -- Market identification
+    market_symbol VARCHAR(50) NOT NULL,  -- e.g., 'PLATINUM_DAILY', 'GOLD_DAILY'
+    symbol VARCHAR(20) NOT NULL,         -- e.g., 'PL=F', 'GC=F'
+
+    -- Planetary aspect identification
+    planet1 VARCHAR(20) NOT NULL,        -- e.g., 'jupiter'
+    planet2 VARCHAR(20) NOT NULL,        -- e.g., 'mars'
+    aspect_type VARCHAR(20) NOT NULL,    -- e.g., 'trine', 'conjunction', 'square'
+
+    -- Backtest configuration
+    orb_size DECIMAL(4,2) NOT NULL,      -- e.g., 8.00 degrees
+    start_date DATE NOT NULL,            -- Backtest period start
+    end_date DATE NOT NULL,              -- Backtest period end
+
+    -- Phase-specific results
+    phase VARCHAR(20) NOT NULL,          -- 'approaching' or 'separating'
+
+    -- Performance metrics (consistent with lunar_patterns structure)
+    total_trades INTEGER NOT NULL,
+    avg_return_pct DECIMAL(8,4),         -- Average return percentage
+    win_rate DECIMAL(5,4),               -- Win rate (0.0 to 1.0)
+    avg_holding_days DECIMAL(6,2),       -- Average holding period
+    best_return_pct DECIMAL(8,4),        -- Best single trade return
+    worst_return_pct DECIMAL(8,4),       -- Worst single trade return
+
+    -- Statistical significance
+    sharpe_ratio DECIMAL(6,4),           -- Risk-adjusted return
+    max_drawdown_pct DECIMAL(8,4),       -- Maximum drawdown
+    volatility_pct DECIMAL(8,4),         -- Return volatility
+
+    -- Pattern strength indicators (consistent with lunar_patterns)
+    accuracy_rate DECIMAL(5,4),          -- Overall pattern accuracy (same as win_rate)
+    confidence_score DECIMAL(5,4),       -- Statistical confidence
+
+    -- Metadata
+    pattern_name VARCHAR(100),           -- Human-readable pattern description
+    total_aspects_found INTEGER,         -- Number of aspect periods found
+    execution_time_seconds DECIMAL(8,2), -- Backtest execution time
+
+    -- Analysis metadata
+    backtest_version VARCHAR(20) DEFAULT 'v1.0',
+    notes TEXT,
+
+    UNIQUE(market_symbol, planet1, planet2, aspect_type, phase, orb_size, start_date, end_date)
+);
+
 -- Insights and Recommendations Tables
 -- ===================================
 

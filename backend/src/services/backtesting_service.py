@@ -113,7 +113,7 @@ class PlanetaryBacktestResponse(BaseModel):
     separating_phase_results: List[PlanetaryBacktestResult]
     summary_stats: Dict[str, Any]
     execution_time_seconds: float
-    insights_saved: bool  # Whether results were saved to astrological_insights table
+    insights_saved: bool  # Whether results were saved to planetary_patterns table
 
 class PlanetaryBacktester:
     """Planetary aspect backtesting with two-phase strategy (approaching vs separating)"""
@@ -186,7 +186,7 @@ class PlanetaryBacktester:
                 'total_aspects': len(aspect_periods)
             }
 
-            # Store results in astrological_insights table
+            # Store results in planetary_patterns table
             self._store_results(
                 symbol, market_name, planet1, planet2, aspect_type, orb_size,
                 start_date, end_date, approaching_results, separating_results
@@ -388,7 +388,7 @@ class PlanetaryBacktester:
     def _store_results(self, symbol: str, market_name: str, planet1: str, planet2: str,
                       aspect_type: str, orb_size: float, start_date: str, end_date: str,
                       approaching_results: Dict, separating_results: Dict):
-        """Store results in astrological_insights table"""
+        """Store results in planetary_patterns table"""
 
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -414,12 +414,12 @@ class PlanetaryBacktester:
     def _insert_phase_results(self, cursor, symbol: str, market_name: str, planet1: str, planet2: str,
                              aspect_type: str, orb_size: float, start_date: str, end_date: str,
                              phase: str, results: Dict):
-        """Insert phase-specific results into astrological_insights table"""
+        """Insert phase-specific results into planetary_patterns table"""
 
         pattern_name = f"{planet1.title()}-{planet2.title()} {aspect_type.title()} {phase.title()} Phase"
 
         cursor.execute("""
-            INSERT INTO astrological_insights (
+            INSERT INTO planetary_patterns (
                 market_symbol, symbol, planet1, planet2, aspect_type, orb_size,
                 start_date, end_date, phase, total_trades, avg_return_pct, win_rate,
                 avg_holding_days, best_return_pct, worst_return_pct, accuracy_rate,
@@ -889,7 +889,7 @@ async def execute_lunar_backtest(request_id: str, request: BacktestRequest):
         })
 
 async def execute_planetary_backtest(request_id: str, request: BacktestRequest):
-    """Execute planetary backtesting analysis and store results in astrological_insights table"""
+    """Execute planetary backtesting analysis and store results in planetary_patterns table"""
     try:
         active_requests[request_id]["status"] = "running"
         active_requests[request_id]["message"] = f"Running planetary backtest for {request.planet1}-{request.planet2}..."

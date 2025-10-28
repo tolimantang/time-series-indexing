@@ -149,16 +149,71 @@ jobs:
       - name: Update kube config
         run: aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION
 
-      - name: Check for SQL changes
+      - name: Check for SQL changes or pending migrations
         id: sql-changes
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          FORCE_MIGRATIONS: ${{ vars.FORCE_MIGRATIONS || 'false' }}
         run: |
-          echo "🔍 Checking for SQL migration changes..."
-          if git diff --name-only HEAD~1 HEAD | grep -q "backend/sql/flyway/"; then
+          echo "🔍 Checking for SQL migration changes and pending migrations..."
+
+          # Check if migrations should be forced
+          if [ "$FORCE_MIGRATIONS" = "true" ]; then
             echo "sql-changed=true" >> $GITHUB_OUTPUT
-            echo "✅ SQL migration files changed, will run migrations"
-          else
+            echo "🔧 FORCE_MIGRATIONS is enabled, will run migrations"
+            exit 0
+          fi
+
+          # Check for SQL file changes in recent commits (last 5 commits)
+          SQL_CHANGES_RECENT=$(git log --name-only --oneline -5 | grep "backend/sql/flyway/" | wc -l)
+          if [ "$SQL_CHANGES_RECENT" -gt 0 ]; then
+            echo "sql-changed=true" >> $GITHUB_OUTPUT
+            echo "✅ SQL migration files found in recent commits, will run migrations"
+            git log --name-only --oneline -5 | grep "backend/sql/flyway/" | head -5
+            exit 0
+          fi
+
+          # Check for pending migrations by comparing local flyway files with database
+          echo "📊 Checking for pending migrations in database..."
+
+          # Install PostgreSQL client for checking database state
+          sudo apt-get update -q && sudo apt-get install -y postgresql-client
+
+          # Get list of migration files
+          LOCAL_MIGRATIONS=$(find backend/sql/flyway -name "V*.sql" | sort | sed 's/.*V\([0-9]*\)__.*/\1/')
+          echo "📁 Local migration versions found: $LOCAL_MIGRATIONS"
+
+          # Check database migration status (if accessible)
+          DB_MIGRATIONS=""
+          if pg_isready -h "$DB_HOST" -p 5432 -U "$DB_USER" -q; then
+            echo "📡 Database is accessible, checking applied migrations..."
+            DB_MIGRATIONS=$(PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -t -c "SELECT version FROM flyway_schema_history WHERE success = true ORDER BY version;" 2>/dev/null | tr -d ' ' | grep -v '^$' || echo "")
+            echo "💾 Database migration versions applied: $DB_MIGRATIONS"
+
+            # Compare local vs database migrations
+            for version in $LOCAL_MIGRATIONS; do
+              if ! echo "$DB_MIGRATIONS" | grep -q "^$version$"; then
+                echo "sql-changed=true" >> $GITHUB_OUTPUT
+                echo "🆕 Found pending migration V$version, will run migrations"
+                exit 0
+              fi
+            done
+
             echo "sql-changed=false" >> $GITHUB_OUTPUT
-            echo "ℹ️ No SQL migration changes detected"
+            echo "✅ All migrations are up to date"
+          else
+            echo "⚠️ Database not accessible, checking recent commits for safety"
+            # Fallback: check last commit for SQL changes as safety measure
+            if git diff --name-only HEAD~1 HEAD | grep -q "backend/sql/flyway/"; then
+              echo "sql-changed=true" >> $GITHUB_OUTPUT
+              echo "✅ SQL migration files changed in last commit, will run migrations"
+            else
+              echo "sql-changed=false" >> $GITHUB_OUTPUT
+              echo "ℹ️ No recent SQL migration changes detected"
+            fi
           fi
 
       - name: Run Database Migrations

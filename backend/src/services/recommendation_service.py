@@ -292,7 +292,7 @@ class PatternMatcher:
         return score / max(total_factors, 1) if total_factors > 0 else 0.0
 
     def get_planetary_insights(self, market_symbol: str, min_accuracy: float = 0.70) -> List[Dict]:
-        """Get validated planetary patterns from astrological_insights table"""
+        """Get validated planetary patterns from planetary_patterns table"""
         cursor = self.conn.cursor()
 
         cursor.execute("""
@@ -310,7 +310,7 @@ class PatternMatcher:
                 best_return_pct,
                 worst_return_pct,
                 created_at
-            FROM astrological_insights
+            FROM planetary_patterns
             WHERE market_symbol = %s
               AND accuracy_rate >= %s
               AND total_trades >= 5
