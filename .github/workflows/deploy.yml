@@ -100,23 +100,34 @@ jobs:
           for service in "${services[@]}"; do
             echo "🔨 Building $service-service with cache..."
 
+            # Set service-specific variables
+            case $service in
+              backfill)
+                SERVICE_PORT=8001
+                ;;
+              backtesting)
+                SERVICE_PORT=8000
+                ;;
+              recommendation)
+                SERVICE_PORT=8002
+                ;;
+            esac
+
             # Create a temporary Dockerfile that uses ECR base image
-            cat > "Dockerfile.$service.tmp" << EOF
-FROM $ECR_REGISTRY/astrofinancial-base:latest
-
-# Set service-specific environment variables
-ENV PORT=$([ "$service" = "backfill" ] && echo "8001" || [ "$service" = "backtesting" ] && echo "8000" || echo "8002")
-ENV SERVICE_NAME=$service-service
-
-# Expose port
-EXPOSE \$PORT
-
-# Add service-specific Python path
-ENV PYTHONPATH=/app/src
-
-# Run the service
-CMD ["python", "-m", "uvicorn", "services.${service}_service:app", "--host", "0.0.0.0", "--port", "\$PORT", "--log-level", "info"]
-EOF
+            echo "FROM $ECR_REGISTRY/astrofinancial-base:latest" > "Dockerfile.$service.tmp"
+            echo "" >> "Dockerfile.$service.tmp"
+            echo "# Set service-specific environment variables" >> "Dockerfile.$service.tmp"
+            echo "ENV PORT=$SERVICE_PORT" >> "Dockerfile.$service.tmp"
+            echo "ENV SERVICE_NAME=$service-service" >> "Dockerfile.$service.tmp"
+            echo "" >> "Dockerfile.$service.tmp"
+            echo "# Expose port" >> "Dockerfile.$service.tmp"
+            echo "EXPOSE $SERVICE_PORT" >> "Dockerfile.$service.tmp"
+            echo "" >> "Dockerfile.$service.tmp"
+            echo "# Add service-specific Python path" >> "Dockerfile.$service.tmp"
+            echo "ENV PYTHONPATH=/app/src" >> "Dockerfile.$service.tmp"
+            echo "" >> "Dockerfile.$service.tmp"
+            echo "# Run the service" >> "Dockerfile.$service.tmp"
+            echo "CMD [\"python\", \"-m\", \"uvicorn\", \"services.${service}_service:app\", \"--host\", \"0.0.0.0\", \"--port\", \"$SERVICE_PORT\", \"--log-level\", \"info\"]" >> "Dockerfile.$service.tmp"
 
             # Build and push service image with cache
             docker buildx build \
