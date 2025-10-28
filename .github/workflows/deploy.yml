@@ -216,44 +216,153 @@ jobs:
             fi
           fi
 
-      - name: Run Database Migrations
+      - name: Run Database Migrations via Kubernetes Job
         if: steps.sql-changes.outputs.sql-changed == 'true'
-        env:
-          DB_HOST: ${{ secrets.DB_HOST }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: |
-          echo "🗄️ Running database migrations with Flyway..."
+          echo "🗄️ Running database migrations via Kubernetes job..."
 
-          # Install Flyway CLI
-          wget -qO- https://repo1.maven.org/maven2/org/flywaydb/flyway-commandline/10.0.1/flyway-commandline-10.0.1-linux-x64.tar.gz | tar -xzf -
-          sudo ln -s $(pwd)/flyway-10.0.1/flyway /usr/local/bin/
+          # Create a unique job name with timestamp
+          MIGRATION_JOB_NAME="flyway-migration-$(date +%Y%m%d-%H%M%S)"
 
-          # Configure Flyway
-          cat > flyway.conf << EOF
-          flyway.url=jdbc:postgresql://${DB_HOST}:5432/${DB_NAME}
-          flyway.user=${DB_USER}
-          flyway.password=${DB_PASSWORD}
-          flyway.locations=filesystem:backend/sql/flyway
-          flyway.sqlMigrationPrefix=V
-          flyway.sqlMigrationSeparator=__
-          flyway.sqlMigrationSuffixes=.sql
-          flyway.cleanDisabled=true
-          flyway.validateOnMigrate=true
+          # Create temporary migration job YAML with current repo URL
+          cat > migration-job.yaml << EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: ${MIGRATION_JOB_NAME}
+            namespace: time-series-indexing
+          spec:
+            template:
+              spec:
+                initContainers:
+                - name: git-clone
+                  image: alpine/git:latest
+                  command: ["/bin/sh"]
+                  args:
+                    - -c
+                    - |
+                      echo "📂 Cloning repository for migration files..."
+                      git clone https://github.com/tolimantang/time-series-indexing.git /workspace
+                      echo "📋 Current commit: \$(cd /workspace && git rev-parse HEAD)"
+
+                      # Copy migration files to shared volume
+                      if [ -d /workspace/backend/sql/flyway ]; then
+                        cp -r /workspace/backend/sql/flyway/* /migrations/
+                        echo "✅ Migration files copied successfully"
+                        echo "📁 Available migrations:"
+                        ls -la /migrations/
+                      else
+                        echo "❌ Migration files not found"
+                        exit 1
+                      fi
+                  volumeMounts:
+                  - name: migrations-volume
+                    mountPath: /migrations
+                  - name: workspace-volume
+                    mountPath: /workspace
+                containers:
+                - name: flyway
+                  image: flyway/flyway:10.15.0
+                  command: ["/bin/sh"]
+                  args:
+                    - -c
+                    - |
+                      echo "🛠️  Running Flyway migrations..."
+
+                      # Set up Flyway configuration from environment
+                      export FLYWAY_URL="jdbc:postgresql://\${DB_HOST}:\${DB_PORT}/\${DB_NAME}"
+                      export FLYWAY_USER="\${DB_USER}"
+                      export FLYWAY_PASSWORD="\${DB_PASSWORD}"
+                      export FLYWAY_LOCATIONS="filesystem:/migrations"
+                      export FLYWAY_BASELINE_ON_MIGRATE=true
+                      export FLYWAY_BASELINE_VERSION=0
+                      export FLYWAY_BASELINE_DESCRIPTION="Pre-Flyway baseline"
+                      export FLYWAY_SCHEMAS=public
+                      export FLYWAY_TABLE=flyway_schema_history
+                      export FLYWAY_VALIDATE_ON_MIGRATE=true
+
+                      echo "📊 Database: \${FLYWAY_URL}"
+                      echo "📁 Migrations location: \${FLYWAY_LOCATIONS}"
+
+                      # Show migration files
+                      echo "📋 Available migrations:"
+                      ls -la /migrations/
+
+                      # Show current schema state
+                      echo "🔍 Checking current schema state..."
+                      flyway info || echo "⚠️  Schema history table doesn't exist yet"
+
+                      # Run migrations
+                      echo "🚀 Running migrations..."
+                      flyway migrate
+
+                      # Show final state
+                      echo "✅ Migration completed! Final state:"
+                      flyway info
+                  env:
+                  - name: DB_HOST
+                    valueFrom:
+                      secretKeyRef:
+                        name: market-encoder-secrets
+                        key: db-host
+                  - name: DB_USER
+                    valueFrom:
+                      secretKeyRef:
+                        name: market-encoder-secrets
+                        key: db-user
+                  - name: DB_NAME
+                    valueFrom:
+                      secretKeyRef:
+                        name: market-encoder-secrets
+                        key: db-name
+                  - name: DB_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: market-encoder-secrets
+                        key: db-password
+                  - name: DB_PORT
+                    value: "5432"
+                  volumeMounts:
+                  - name: migrations-volume
+                    mountPath: /migrations
+                  resources:
+                    requests:
+                      memory: "256Mi"
+                      cpu: "100m"
+                    limits:
+                      memory: "512Mi"
+                      cpu: "200m"
+                volumes:
+                - name: migrations-volume
+                  emptyDir: {}
+                - name: workspace-volume
+                  emptyDir: {}
+                restartPolicy: Never
+            backoffLimit: 1
           EOF
 
-          # Show current schema info
-          echo "📊 Current migration status:"
-          flyway -configFiles=flyway.conf info || echo "No migrations applied yet"
+          # Apply the migration job
+          echo "🚀 Creating migration job: ${MIGRATION_JOB_NAME}"
+          kubectl apply -f migration-job.yaml
 
-          # Run migrations
-          echo "🚀 Applying pending migrations..."
-          flyway -configFiles=flyway.conf migrate
+          # Wait for job to complete
+          echo "⏳ Waiting for migration job to complete..."
+          kubectl wait --for=condition=complete job/${MIGRATION_JOB_NAME} -n time-series-indexing --timeout=300s || {
+            echo "❌ Migration job failed or timed out"
+            kubectl describe job/${MIGRATION_JOB_NAME} -n time-series-indexing
+            kubectl logs job/${MIGRATION_JOB_NAME} -n time-series-indexing
+            exit 1
+          }
 
-          # Show final status
-          echo "✅ Migration completed. Final status:"
-          flyway -configFiles=flyway.conf info
+          # Show logs
+          echo "📋 Migration job logs:"
+          kubectl logs job/${MIGRATION_JOB_NAME} -n time-series-indexing
+
+          # Clean up job
+          echo "🧹 Cleaning up migration job..."
+          kubectl delete job/${MIGRATION_JOB_NAME} -n time-series-indexing
+
+          echo "✅ Database migrations completed successfully via Kubernetes job"
 
       - name: Skip Database Migrations
         if: steps.sql-changes.outputs.sql-changed == 'false'
