@@ -107,8 +107,8 @@ class BackfillRequest(BaseModel):
 
     @validator('type')
     def validate_type(cls, v):
-        if v not in ['market', 'astro', 'news']:
-            raise ValueError('type must be market, astro, or news')
+        if v not in ['market', 'astro', 'news', 'events']:
+            raise ValueError('type must be market, astro, news, or events')
         return v
 
     @validator('symbol')
@@ -387,7 +387,7 @@ async def execute_backfill(request_id: str, request: BackfillRequest):
             records_processed = await backfill_market_data(request_id, request)
         elif request.type == "astro":
             records_processed = await backfill_astro_data(request_id, request)
-        elif request.type == "news":
+        elif request.type == "news" or request.type == "events":
             records_processed = await backfill_news_data(request_id, request)
 
         execution_time = (datetime.now() - start_time).total_seconds()
@@ -553,17 +553,60 @@ async def backfill_astro_data(request_id: str, request: BackfillRequest) -> int:
         raise
 
 async def backfill_news_data(request_id: str, request: BackfillRequest) -> int:
-    """Backfill news data (placeholder for future implementation)"""
-    logger.info(f"📰 News backfill requested but not yet implemented")
+    """Backfill financial events data using EventEncoder"""
+    logger.info(f"📰 Starting events backfill from {request.start_date} to {request.end_date}")
 
-    # Update status to indicate this is not implemented yet
-    active_requests[request_id]["message"] = "News backfill not yet implemented"
+    try:
+        # Import here to avoid circular imports
+        import sys
+        import os
+        sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-    # For now, just simulate some processing
-    import asyncio
-    await asyncio.sleep(2)
+        from event_encoder.sources.fred_encoder import FredEventEncoder
+        from services.chroma_manager import create_chroma_manager
 
-    raise NotImplementedError("News data backfill is not yet implemented")
+        # Initialize encoders and storage
+        fred_encoder = FredEventEncoder()
+        chroma_manager = create_chroma_manager()
+
+        # Validate connection
+        if not fred_encoder.validate_connection():
+            raise ValueError("Failed to connect to FRED API")
+
+        active_requests[request_id]["message"] = "Fetching FRED economic events..."
+
+        # Parse dates
+        from datetime import datetime
+        start_dt = datetime.strptime(request.start_date, '%Y-%m-%d')
+        end_dt = datetime.strptime(request.end_date, '%Y-%m-%d')
+
+        # Fetch events from FRED
+        events = fred_encoder.fetch_events(start_dt, end_dt)
+
+        if not events:
+            logger.warning(f"No events found for {request.start_date} to {request.end_date}")
+            return 0
+
+        active_requests[request_id]["message"] = f"Processing {len(events)} events for ChromaDB..."
+
+        # Convert to ChromaDB format
+        chroma_docs = []
+        for event in events:
+            chroma_docs.append(event.to_chroma_document())
+
+        # Store in ChromaDB
+        collection_name = "financial_events"
+        success = chroma_manager.add_events(collection_name, chroma_docs)
+
+        if success:
+            logger.info(f"✅ Successfully stored {len(events)} events in ChromaDB")
+            return len(events)
+        else:
+            raise ValueError("Failed to store events in ChromaDB")
+
+    except Exception as e:
+        logger.error(f"❌ Events backfill failed: {e}", exc_info=True)
+        raise
 
 if __name__ == "__main__":
     import uvicorn

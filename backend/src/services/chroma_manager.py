@@ -7,8 +7,7 @@ Provides unified interface for collection management and operations.
 
 import os
 import logging
-from typing import Dict, Any, List, Optional, Union
-from datetime import datetime
+from typing import Dict, Any, List, Optional
 import chromadb
 from chromadb.config import Settings
 from chromadb.api.types import Collection
@@ -49,7 +48,9 @@ class ChromaManager:
 
         # Initialize ChromaDB client
         if connection_type == "hosted":
-            self.client = self._create_hosted_client(host, port, api_key)
+            if not all([host, port, api_key]):
+                raise ValueError("Host, port, and API key required for hosted connection")
+            self.client = self._create_hosted_client(host, port, api_key)  # type: ignore
         else:
             self.client = self._create_local_client(local_path)
 
@@ -233,7 +234,7 @@ class ChromaManager:
                     query_text: str,
                     n_results: int = 10,
                     where_filter: Optional[Dict[str, Any]] = None,
-                    include: List[str] = None) -> Dict[str, Any]:
+                    include: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Query financial events using semantic search.
 
