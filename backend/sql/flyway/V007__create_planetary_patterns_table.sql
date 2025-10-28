@@ -3,8 +3,7 @@
 -- Date: 2024-10-28
 -- Description: Create properly named planetary_patterns table, handle existing astrological_insights table
 
--- Drop the incorrectly named table if it exists (from V006)
-DROP TABLE IF EXISTS astrological_insights CASCADE;
+-- Note: V006 was removed, so no astrological_insights table to drop
 
 -- Create planetary_patterns table with correct name and structure
 CREATE TABLE IF NOT EXISTS planetary_patterns (
