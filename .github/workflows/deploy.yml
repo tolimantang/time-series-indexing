@@ -83,32 +83,54 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          # Build base image first with cache
+          # Build base image first with cache and push to ECR
+          echo "🔨 Building base image with cache..."
           docker buildx build \
             --platform linux/amd64 \
             --cache-from type=registry,ref=$ECR_REGISTRY/astrofinancial-base:buildcache \
             --cache-to type=registry,ref=$ECR_REGISTRY/astrofinancial-base:buildcache,mode=max \
             -f backend/docker/Dockerfile.base \
-            -t astrofinancial-base:latest \
-            --load \
+            -t $ECR_REGISTRY/astrofinancial-base:latest \
+            --push \
             backend/
 
-          # Build and push each backend service with cache
+          # Build and push each backend service with cache, using ECR base image
           services=(backfill backtesting recommendation)
 
           for service in "${services[@]}"; do
             echo "🔨 Building $service-service with cache..."
+
+            # Create a temporary Dockerfile that uses ECR base image
+            cat > "Dockerfile.$service.tmp" << EOF
+FROM $ECR_REGISTRY/astrofinancial-base:latest
+
+# Set service-specific environment variables
+ENV PORT=$([ "$service" = "backfill" ] && echo "8001" || [ "$service" = "backtesting" ] && echo "8000" || echo "8002")
+ENV SERVICE_NAME=$service-service
+
+# Expose port
+EXPOSE \$PORT
+
+# Add service-specific Python path
+ENV PYTHONPATH=/app/src
+
+# Run the service
+CMD ["python", "-m", "uvicorn", "services.${service}_service:app", "--host", "0.0.0.0", "--port", "\$PORT", "--log-level", "info"]
+EOF
 
             # Build and push service image with cache
             docker buildx build \
               --platform linux/amd64 \
               --cache-from type=registry,ref=$ECR_REGISTRY/astrofinancial-$service-service:buildcache \
               --cache-to type=registry,ref=$ECR_REGISTRY/astrofinancial-$service-service:buildcache,mode=max \
-              -f backend/docker/Dockerfile.$service \
+              -f "Dockerfile.$service.tmp" \
               -t $ECR_REGISTRY/astrofinancial-$service-service:$IMAGE_TAG \
               -t $ECR_REGISTRY/astrofinancial-$service-service:latest \
               --push \
               backend/
+
+            # Clean up temporary Dockerfile
+            rm "Dockerfile.$service.tmp"
 
             echo "✅ $service-service pushed to ECR"
           done
