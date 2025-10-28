@@ -563,11 +563,17 @@ async def backfill_news_data(request_id: str, request: BackfillRequest) -> int:
         sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
         from event_encoder.sources.fred_encoder import FredEventEncoder
-        from services.chroma_manager import create_chroma_manager
 
-        # Initialize encoders and storage
+        # Try to import ChromaDB manager, fallback if not available
+        try:
+            from services.chroma_manager import create_chroma_manager
+            CHROMA_AVAILABLE = True
+        except ImportError as e:
+            logger.warning(f"ChromaDB not available: {e}")
+            CHROMA_AVAILABLE = False
+
+        # Initialize encoders
         fred_encoder = FredEventEncoder()
-        chroma_manager = create_chroma_manager()
 
         # Validate connection
         if not fred_encoder.validate_connection():
@@ -587,22 +593,36 @@ async def backfill_news_data(request_id: str, request: BackfillRequest) -> int:
             logger.warning(f"No events found for {request.start_date} to {request.end_date}")
             return 0
 
-        active_requests[request_id]["message"] = f"Processing {len(events)} events for ChromaDB..."
+        # Store events
+        if CHROMA_AVAILABLE:
+            active_requests[request_id]["message"] = f"Processing {len(events)} events for ChromaDB..."
 
-        # Convert to ChromaDB format
-        chroma_docs = []
-        for event in events:
-            chroma_docs.append(event.to_chroma_document())
+            # Initialize ChromaDB manager
+            chroma_manager = create_chroma_manager()
 
-        # Store in ChromaDB
-        collection_name = "financial_events"
-        success = chroma_manager.add_events(collection_name, chroma_docs)
+            # Convert to ChromaDB format
+            chroma_docs = []
+            for event in events:
+                chroma_docs.append(event.to_chroma_document())
 
-        if success:
-            logger.info(f"✅ Successfully stored {len(events)} events in ChromaDB")
-            return len(events)
+            # Store in ChromaDB
+            collection_name = "financial_events"
+            success = chroma_manager.add_events(collection_name, chroma_docs)
+
+            if success:
+                logger.info(f"✅ Successfully stored {len(events)} events in ChromaDB")
+                return len(events)
+            else:
+                raise ValueError("Failed to store events in ChromaDB")
         else:
-            raise ValueError("Failed to store events in ChromaDB")
+            # Fallback: just log events without storing
+            active_requests[request_id]["message"] = f"ChromaDB not available - logging {len(events)} events..."
+
+            for event in events:
+                logger.info(f"Event: {event.date.strftime('%Y-%m-%d')} - {event.title}")
+
+            logger.info(f"✅ Processed {len(events)} events (ChromaDB not available)")
+            return len(events)
 
     except Exception as e:
         logger.error(f"❌ Events backfill failed: {e}", exc_info=True)

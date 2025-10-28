@@ -46,7 +46,9 @@ RUN pip install --no-cache-dir \
     "python-dotenv>=1.0.0" \
     "python-json-logger==2.0.7" \
     "python-dateutil>=2.8.0" \
-    "yfinance>=0.2.18"
+    "yfinance>=0.2.18" \
+    "chromadb==0.4.18" \
+    "sentence-transformers>=2.6.0"
 
 # Verify Swiss Ephemeris installation
 RUN python -c "import swisseph; print(f'Swiss Ephemeris version: {swisseph.get_library_path()}')" || \

@@ -124,19 +124,27 @@ class FredEventEncoder(BaseEventEncoder):
         Initialize FRED event encoder.
 
         Args:
-            api_key: FRED API key (optional - many endpoints work without it)
+            api_key: FRED API key (REQUIRED - get free key at https://fred.stlouisfed.org/docs/api/api_key.html)
             **config: Additional configuration options
         """
         super().__init__('fred', **config)
 
         self.api_key = api_key or os.getenv('FRED_API_KEY')
+        if not self.api_key:
+            raise ValueError(
+                "FRED API key is required. Get a free key at: https://fred.stlouisfed.org/docs/api/api_key.html\n"
+                "Then either:\n"
+                "1. Pass it to FredEventEncoder(api_key='your_key')\n"
+                "2. Set environment variable: FRED_API_KEY='your_key'"
+            )
+
         self.base_url = 'https://api.stlouisfed.org/fred'
 
         # Rate limiting
         self.requests_per_second = config.get('requests_per_second', 5)  # Conservative limit
         self.last_request_time = 0
 
-        logger.info(f"FRED encoder initialized {'with API key' if self.api_key else 'without API key'}")
+        logger.info(f"FRED encoder initialized with API key")
 
     def _rate_limit(self):
         """Implement rate limiting for FRED API."""

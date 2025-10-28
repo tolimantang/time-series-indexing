@@ -28,13 +28,29 @@ def test_fred_connection():
     """Test FRED API connection."""
     print("🔗 Testing FRED API connection...")
 
-    fred_encoder = FredEventEncoder()
+    try:
+        fred_encoder = FredEventEncoder()
 
-    if fred_encoder.validate_connection():
-        print("✅ FRED API connection successful!")
-        return True
-    else:
-        print("❌ FRED API connection failed")
+        if fred_encoder.validate_connection():
+            print("✅ FRED API connection successful!")
+            return True
+        else:
+            print("❌ FRED API connection failed")
+            return False
+
+    except ValueError as e:
+        print("❌ FRED API Key Required!")
+        print(str(e))
+        print("\n📝 Quick Setup (takes 30 seconds):")
+        print("1. Go to: https://fred.stlouisfed.org/docs/api/api_key.html")
+        print("2. Click 'Request API Key'")
+        print("3. Fill out simple form (name, email, usage)")
+        print("4. Get your free API key")
+        print("5. Set environment variable: export FRED_API_KEY='your_key_here'")
+        print("6. Re-run this test")
+        return False
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
         return False
 
 
