@@ -350,11 +350,11 @@ class PlanetaryBacktester:
 
         return {
             'total_trades': len(trades),
-            'avg_return_pct': sum(returns) / len(returns),
-            'win_rate': len([r for r in returns if r > 0]) / len(returns),
-            'avg_holding_days': sum(holding_days) / len(holding_days),
-            'best_return_pct': max(returns),
-            'worst_return_pct': min(returns),
+            'avg_return_pct': float(sum(returns) / len(returns)),
+            'win_rate': float(len([r for r in returns if r > 0]) / len(returns)),
+            'avg_holding_days': float(sum(holding_days) / len(holding_days)),
+            'best_return_pct': float(max(returns)),
+            'worst_return_pct': float(min(returns)),
             'trades': trades
         }
 
