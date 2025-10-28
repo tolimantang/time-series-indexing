@@ -117,16 +117,20 @@ CREATE TABLE planetary_patterns (
 
     -- Planetary aspect identification
     planet1 VARCHAR(20) NOT NULL,        -- e.g., 'jupiter'
-    planet2 VARCHAR(20) NOT NULL,        -- e.g., 'mars'
-    aspect_type VARCHAR(20) NOT NULL,    -- e.g., 'trine', 'conjunction', 'square'
+    planet2 VARCHAR(20),                 -- e.g., 'mars' (NULL for ingress backtests)
+    aspect_type VARCHAR(20) NOT NULL,    -- e.g., 'trine', 'conjunction', 'square', 'ingress'
 
     -- Backtest configuration
-    orb_size DECIMAL(4,2) NOT NULL,      -- e.g., 8.00 degrees
+    orb_size DECIMAL(4,2),               -- e.g., 8.00 degrees (NULL for ingress backtests)
     start_date DATE NOT NULL,            -- Backtest period start
     end_date DATE NOT NULL,              -- Backtest period end
 
-    -- Phase-specific results
-    phase VARCHAR(20) NOT NULL,          -- 'approaching' or 'separating'
+    -- Phase-specific results (for aspects) / Zodiac sign (for ingress)
+    phase VARCHAR(20) NOT NULL,          -- 'approaching'/'separating' for aspects, zodiac sign for ingress
+
+    -- Ingress-specific fields
+    ingress_date DATE,                   -- Date when planet ingresses into zodiac_sign
+    zodiac_sign VARCHAR(20),             -- Zodiac sign for ingress backtests (e.g., 'cancer', 'leo')
 
     -- Performance metrics (consistent with lunar_patterns structure)
     total_trades INTEGER NOT NULL,
