@@ -718,7 +718,7 @@ class PlanetaryIngressBacktester:
 
         pattern_name = f"{planet.title()} Ingress into {sign.title()}"
 
-        # Store with ingress-specific fields
+        # Store with ingress-specific fields (using 0.0 as dummy orb_size for ingress patterns)
         cursor.execute("""
             INSERT INTO planetary_patterns (
                 market_symbol, symbol, planet1, planet2, aspect_type, orb_size,
@@ -738,7 +738,7 @@ class PlanetaryIngressBacktester:
                 accuracy_rate = EXCLUDED.accuracy_rate,
                 updated_at = CURRENT_TIMESTAMP
         """, (
-            f"{market_name}_DAILY", symbol, planet.lower(), None, 'ingress', None,
+            f"{market_name}_DAILY", symbol, planet.lower(), None, 'ingress', 0.0,  # Use 0.0 as dummy orb_size for ingress
             start_date, end_date, sign.lower(), sign.lower(),
             ingress_dates[0]['ingress_date'].date() if ingress_dates else None,
             int(results['total_trades']), float(results['avg_return_pct']),
