@@ -48,7 +48,7 @@ class BacktestRequest(BaseModel):
     end_date: Optional[str] = Field(None, description="End date (YYYY-MM-DD)")
 
     # Backtest type discriminator
-    backtest_type: str = Field(..., description="Type of backtest: 'lunar' or 'planetary'")
+    backtest_type: str = Field(..., description="Type of backtest: 'lunar', 'planetary', or 'ingress'")
 
     # Lunar-specific fields (only used when backtest_type='lunar')
     timing_type: Optional[str] = Field("next_day", description="Lunar timing type: same_day, next_day, or all")
@@ -60,6 +60,10 @@ class BacktestRequest(BaseModel):
     planet2: Optional[str] = Field(None, description="Second planet (e.g., mars)")
     aspect_types: Optional[List[str]] = Field(None, description="Aspect types (e.g., ['trine']). If None, uses all major aspects")
     orb_size: Optional[float] = Field(8.0, description="Orb size in degrees for planetary aspects")
+
+    # Ingress-specific fields (only used when backtest_type='ingress')
+    planet: Optional[str] = Field(None, description="Planet for ingress (e.g., jupiter) or 'all' for all major planets")
+    zodiac_signs: Optional[List[str]] = Field(None, description="Zodiac signs for ingress (e.g., ['cancer']) or ['all'] for all signs")
 
 class BacktestResponse(BaseModel):
     request_id: str
@@ -445,6 +449,310 @@ class PlanetaryBacktester:
             pattern_name, int(len(results.get('trades', []))), 'v1.0'
         ))
 
+class PlanetaryIngressBacktester:
+    """Planetary ingress backtesting with simple next-day price comparison strategy"""
+
+    def __init__(self):
+        # Swiss Ephemeris planet constants (excluding moon as requested)
+        self.planet_constants = {
+            'sun': swe.SUN,
+            'mercury': swe.MERCURY,
+            'venus': swe.VENUS,
+            'mars': swe.MARS,
+            'jupiter': swe.JUPITER,
+            'saturn': swe.SATURN,
+            'uranus': swe.URANUS,
+            'neptune': swe.NEPTUNE,
+            'pluto': swe.PLUTO
+        }
+
+        # All zodiac signs with their degree ranges
+        self.zodiac_signs = {
+            'aries': 0,
+            'taurus': 30,
+            'gemini': 60,
+            'cancer': 90,
+            'leo': 120,
+            'virgo': 150,
+            'libra': 180,
+            'scorpio': 210,
+            'sagittarius': 240,
+            'capricorn': 270,
+            'aquarius': 300,
+            'pisces': 330
+        }
+
+    def run_ingress_backtest(self, symbol: str, market_name: str, planet: str,
+                           zodiac_signs: List[str], start_date: str, end_date: str):
+        """Run complete planetary ingress backtest"""
+
+        logger.info(f"🌟 Starting ingress backtest: {planet} into {zodiac_signs} for {symbol}")
+
+        # Get market data
+        market_data = self._get_market_data(symbol, start_date, end_date)
+        if market_data.empty:
+            raise ValueError(f"No market data found for {symbol} in the date range")
+
+        # Expand "all" parameters
+        planets_to_test = self._expand_planets([planet])
+        signs_to_test = self._expand_zodiac_signs(zodiac_signs)
+
+        results = {}
+
+        # Run backtest for each planet/sign combination
+        for test_planet in planets_to_test:
+            for sign in signs_to_test:
+                logger.info(f"⭐ Testing {test_planet} ingress into {sign}")
+
+                # Find ingress dates
+                ingress_dates = self._find_ingress_dates(
+                    test_planet, sign, start_date, end_date
+                )
+
+                if not ingress_dates:
+                    logger.warning(f"No {test_planet} ingresses into {sign} found")
+                    continue
+
+                # Run simple next-day price comparison backtest
+                ingress_results = self._backtest_ingress_events(
+                    market_data, ingress_dates, test_planet, sign
+                )
+
+                pattern_key = f"{test_planet}_{sign}"
+                results[pattern_key] = {
+                    'planet': test_planet,
+                    'zodiac_sign': sign,
+                    'ingress_events': len(ingress_dates),
+                    'results': ingress_results
+                }
+
+                # Store results in planetary_patterns table
+                self._store_ingress_results(
+                    symbol, market_name, test_planet, sign,
+                    start_date, end_date, ingress_results, ingress_dates
+                )
+
+        return results
+
+    def _expand_planets(self, planets: List[str]) -> List[str]:
+        """Expand 'all' to all major planets"""
+        if 'all' in planets:
+            return list(self.planet_constants.keys())
+        return [p.lower() for p in planets]
+
+    def _expand_zodiac_signs(self, signs: List[str]) -> List[str]:
+        """Expand 'all' to all zodiac signs"""
+        if 'all' in signs:
+            return list(self.zodiac_signs.keys())
+        return [s.lower() for s in signs]
+
+    def _get_market_data(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """Get market data from database or yfinance (reuse logic from PlanetaryBacktester)"""
+        try:
+            # First try database
+            conn = get_db_connection()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT trade_date, open_price, high_price, low_price, close_price, volume
+                FROM market_data
+                WHERE symbol = %s AND trade_date BETWEEN %s AND %s
+                ORDER BY trade_date
+            """, (symbol, start_date, end_date))
+
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+
+            if rows:
+                df = pd.DataFrame(rows, columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
+                df['Date'] = pd.to_datetime(df['Date'])
+                df.set_index('Date', inplace=True)
+                return df
+
+        except Exception as e:
+            logger.warning(f"Database lookup failed: {e}, trying yfinance")
+
+        # Fallback to yfinance
+        try:
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(start=start_date, end=end_date)
+            return df
+        except Exception as e:
+            logger.error(f"Failed to get market data: {e}")
+            return pd.DataFrame()
+
+    def _find_ingress_dates(self, planet: str, sign: str, start_date: str, end_date: str) -> List[Dict]:
+        """Find dates when planet ingresses into specified zodiac sign"""
+
+        planet_id = self.planet_constants[planet.lower()]
+        sign_start_degree = self.zodiac_signs[sign.lower()]
+        sign_end_degree = (sign_start_degree + 30) % 360
+
+        ingress_dates = []
+        current_date = pd.to_datetime(start_date)
+        end_dt = pd.to_datetime(end_date)
+        previous_position = None
+
+        while current_date <= end_dt:
+            try:
+                # Calculate Julian day
+                jd = swe.julday(current_date.year, current_date.month, current_date.day, 12.0)
+
+                # Get planetary position
+                pos, _ = swe.calc_ut(jd, planet_id)
+                current_longitude = pos[0] % 360
+
+                if previous_position is not None:
+                    # Check if planet crossed into the sign
+                    if self._crossed_into_sign(previous_position, current_longitude, sign_start_degree):
+                        ingress_dates.append({
+                            'ingress_date': current_date,
+                            'planet': planet,
+                            'zodiac_sign': sign,
+                            'longitude_at_ingress': current_longitude
+                        })
+                        logger.info(f"🌟 Found {planet} ingress into {sign} on {current_date.date()}")
+
+                previous_position = current_longitude
+
+            except Exception as e:
+                logger.warning(f"Swiss Ephemeris calculation failed for {current_date}: {e}")
+
+            current_date += timedelta(days=1)
+
+        logger.info(f"Found {len(ingress_dates)} {planet} ingresses into {sign}")
+        return ingress_dates
+
+    def _crossed_into_sign(self, prev_longitude: float, curr_longitude: float, sign_start: float) -> bool:
+        """Check if planet crossed from outside sign to inside sign"""
+        # Handle wraparound at 360/0 degrees
+        if sign_start == 0:  # Aries
+            # Check if crossed from Pisces (330-360) to Aries (0-30)
+            return (prev_longitude >= 330 and curr_longitude <= 30) or \
+                   (prev_longitude > curr_longitude and curr_longitude <= 30)
+        else:
+            # Normal case: check if crossed the sign boundary
+            return prev_longitude < sign_start <= curr_longitude
+
+    def _backtest_ingress_events(self, market_data: pd.DataFrame, ingress_dates: List[Dict],
+                                planet: str, sign: str) -> Dict:
+        """Simple next-day price comparison strategy for ingress events"""
+
+        trades = []
+
+        for ingress in ingress_dates:
+            ingress_date = ingress['ingress_date']
+
+            # Find prices on ingress day and next day
+            ingress_price, next_day_price = self._get_ingress_trade_prices(
+                market_data, ingress_date
+            )
+
+            if ingress_price and next_day_price:
+                return_pct = ((next_day_price - ingress_price) / ingress_price) * 100
+
+                trades.append({
+                    'ingress_date': ingress_date,
+                    'next_day_date': ingress_date + timedelta(days=1),
+                    'ingress_price': ingress_price,
+                    'next_day_price': next_day_price,
+                    'return_pct': return_pct,
+                    'ingress_info': ingress
+                })
+
+        # Calculate statistics
+        if not trades:
+            return {
+                'total_trades': 0,
+                'avg_return_pct': 0,
+                'win_rate': 0,
+                'best_return_pct': 0,
+                'worst_return_pct': 0,
+                'trades': []
+            }
+
+        returns = [t['return_pct'] for t in trades]
+
+        return {
+            'total_trades': len(trades),
+            'avg_return_pct': float(sum(returns) / len(returns)),
+            'win_rate': float(len([r for r in returns if r > 0]) / len(returns)),
+            'best_return_pct': float(max(returns)),
+            'worst_return_pct': float(min(returns)),
+            'trades': trades
+        }
+
+    def _get_ingress_trade_prices(self, market_data: pd.DataFrame, ingress_date):
+        """Get ingress day price and next day price from market data"""
+        try:
+            ingress_price = None
+            next_day_price = None
+
+            # Look for ingress day price (within 3 days)
+            for days_offset in range(4):
+                check_date = ingress_date + timedelta(days=days_offset)
+                if check_date.date() in market_data.index.date:
+                    ingress_price = market_data.loc[market_data.index.date == check_date.date(), 'Close'].iloc[0]
+                    break
+
+            # Look for next trading day price (within 7 days to account for weekends)
+            for days_offset in range(1, 8):
+                check_date = ingress_date + timedelta(days=days_offset)
+                if check_date.date() in market_data.index.date:
+                    next_day_price = market_data.loc[market_data.index.date == check_date.date(), 'Close'].iloc[0]
+                    break
+
+            return ingress_price, next_day_price
+
+        except Exception as e:
+            logger.warning(f"Price lookup failed: {e}")
+            return None, None
+
+    def _store_ingress_results(self, symbol: str, market_name: str, planet: str, sign: str,
+                              start_date: str, end_date: str, results: Dict, ingress_dates: List):
+        """Store ingress results in planetary_patterns table"""
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        pattern_name = f"{planet.title()} Ingress into {sign.title()}"
+
+        # Store with ingress-specific fields
+        cursor.execute("""
+            INSERT INTO planetary_patterns (
+                market_symbol, symbol, planet1, planet2, aspect_type, orb_size,
+                start_date, end_date, phase, zodiac_sign, ingress_date,
+                total_trades, avg_return_pct, win_rate, best_return_pct, worst_return_pct,
+                accuracy_rate, pattern_name, total_aspects_found, backtest_version
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            ON CONFLICT (market_symbol, planet1, planet2, aspect_type, phase, zodiac_sign, orb_size, start_date, end_date)
+            DO UPDATE SET
+                total_trades = EXCLUDED.total_trades,
+                avg_return_pct = EXCLUDED.avg_return_pct,
+                win_rate = EXCLUDED.win_rate,
+                best_return_pct = EXCLUDED.best_return_pct,
+                worst_return_pct = EXCLUDED.worst_return_pct,
+                accuracy_rate = EXCLUDED.accuracy_rate,
+                updated_at = CURRENT_TIMESTAMP
+        """, (
+            f"{market_name}_DAILY", symbol, planet.lower(), None, 'ingress', None,
+            start_date, end_date, sign.lower(), sign.lower(),
+            ingress_dates[0]['ingress_date'].date() if ingress_dates else None,
+            int(results['total_trades']), float(results['avg_return_pct']),
+            float(results['win_rate']), float(results['best_return_pct']),
+            float(results['worst_return_pct']), float(results['win_rate']),
+            pattern_name, int(len(ingress_dates)), 'v1.0'
+        ))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        logger.info(f"✅ Stored ingress results for {planet} into {sign}")
+
 # In-memory storage for request tracking (in production, use Redis/DB)
 active_requests: Dict[str, Dict] = {}
 
@@ -558,10 +866,10 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
     """Run backtesting analysis - handles both lunar and planetary backtests"""
 
     # Validate backtest_type
-    if request.backtest_type not in ['lunar', 'planetary']:
+    if request.backtest_type not in ['lunar', 'planetary', 'ingress']:
         raise HTTPException(
             status_code=400,
-            detail="backtest_type must be 'lunar' or 'planetary'"
+            detail="backtest_type must be 'lunar', 'planetary', or 'ingress'"
         )
 
     # Validate type-specific required fields
@@ -582,12 +890,30 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
                 status_code=400,
                 detail="start_date and end_date are required for planetary backtests"
             )
+    elif request.backtest_type == 'ingress':
+        if not request.planet:
+            raise HTTPException(
+                status_code=400,
+                detail="planet is required for ingress backtests"
+            )
+        if not request.zodiac_signs:
+            raise HTTPException(
+                status_code=400,
+                detail="zodiac_signs are required for ingress backtests"
+            )
+        if not request.start_date or not request.end_date:
+            raise HTTPException(
+                status_code=400,
+                detail="start_date and end_date are required for ingress backtests"
+            )
 
     # Generate request ID
     if request.backtest_type == 'lunar':
         request_id = f"{request.symbol}_{request.timing_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    else:
+    elif request.backtest_type == 'planetary':
         request_id = f"{request.symbol}_{request.planet1}_{request.planet2}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    else:  # ingress
+        request_id = f"{request.symbol}_{request.planet}_ingress_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     # Pre-validate data availability
     try:
@@ -629,9 +955,12 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
     if request.backtest_type == 'lunar':
         background_tasks.add_task(execute_lunar_backtest, request_id, request)
         message = f"Lunar backtesting started for {request.market_name} ({request.timing_type}) with EnhancedDailyLunarTester"
-    else:
+    elif request.backtest_type == 'planetary':
         background_tasks.add_task(execute_planetary_backtest, request_id, request)
         message = f"Planetary backtesting started for {request.market_name} ({request.planet1}-{request.planet2}) with PlanetaryBacktester"
+    else:  # ingress
+        background_tasks.add_task(execute_ingress_backtest, request_id, request)
+        message = f"Ingress backtesting started for {request.market_name} ({request.planet} into {request.zodiac_signs}) with PlanetaryIngressBacktester"
 
     return BacktestResponse(
         request_id=request_id,
@@ -958,6 +1287,73 @@ async def execute_planetary_backtest(request_id: str, request: BacktestRequest):
         active_requests[request_id].update({
             "status": "failed",
             "message": f"Planetary analysis failed: {str(e)}"
+        })
+
+async def execute_ingress_backtest(request_id: str, request: BacktestRequest):
+    """Execute planetary ingress backtesting analysis and store results in planetary_patterns table"""
+    try:
+        active_requests[request_id]["status"] = "running"
+        active_requests[request_id]["message"] = f"Running ingress backtest for {request.planet} into {request.zodiac_signs}..."
+
+        logger.info(f"🌟 Starting ingress backtest {request_id}: {request.symbol} ({request.planet} into {request.zodiac_signs})")
+
+        start_time = datetime.now()
+
+        # Create PlanetaryIngressBacktester instance
+        backtester = PlanetaryIngressBacktester()
+
+        # Run the ingress backtest
+        results = backtester.run_ingress_backtest(
+            symbol=request.symbol,
+            market_name=request.market_name,
+            planet=request.planet,
+            zodiac_signs=request.zodiac_signs,
+            start_date=request.start_date,
+            end_date=request.end_date
+        )
+
+        execution_time = (datetime.now() - start_time).total_seconds()
+
+        # Calculate summary statistics
+        total_ingress_events = sum(r.get('ingress_events', 0) for r in results.values())
+        total_trades = sum(r['results']['total_trades'] for r in results.values())
+
+        # Find best performing planet/sign combination
+        best_performance = {'avg_return': -float('inf'), 'planet': None, 'sign': None}
+        for pattern_key, data in results.items():
+            if data['results']['total_trades'] > 0 and data['results']['avg_return_pct'] > best_performance['avg_return']:
+                best_performance.update({
+                    'avg_return': data['results']['avg_return_pct'],
+                    'planet': data['planet'],
+                    'sign': data['zodiac_sign'],
+                    'win_rate': data['results']['win_rate'],
+                    'trades': data['results']['total_trades']
+                })
+
+        # Update final status
+        active_requests[request_id].update({
+            "status": "completed",
+            "message": f"Ingress backtest completed. Found {total_ingress_events} ingress events, {total_trades} total trades.",
+            "patterns_found": total_ingress_events,
+            "best_pattern": {
+                "name": f"{best_performance['planet'].title()} Ingress into {best_performance['sign'].title()}",
+                "avg_return": best_performance['avg_return'],
+                "win_rate": best_performance['win_rate'],
+                "trades": best_performance['trades']
+            } if best_performance['planet'] else None,
+            "execution_time": execution_time,
+            "total_ingress_events": total_ingress_events,
+            "total_trades": total_trades,
+            "insights_saved": True
+        })
+
+        logger.info(f"✅ Completed ingress backtest {request_id}: {total_ingress_events} events, {total_trades} trades")
+
+    except Exception as e:
+        logger.error(f"❌ Ingress backtest {request_id} failed: {e}", exc_info=True)
+        active_requests[request_id].update({
+            "status": "failed",
+            "message": f"Ingress analysis failed: {str(e)}"
         })
 
 if __name__ == "__main__":
