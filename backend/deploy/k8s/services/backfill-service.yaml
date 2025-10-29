@@ -52,7 +52,9 @@ spec:
               numpy \
               yfinance \
               pyephem \
-              requests
+              requests \
+              chromadb==0.4.18 \
+              sentence-transformers
 
             # Try to install swisseph (may fail but we'll handle gracefully)
             pip install --no-cache-dir swisseph || echo "⚠️ Swiss Ephemeris not available, using fallback"
@@ -140,6 +142,11 @@ spec:
               key: db-password
         - name: DB_PORT
           value: "5432"
+        - name: FRED_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: fred-api-secret
+              key: api-key
 
         # Health checks
         livenessProbe:
