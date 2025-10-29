@@ -378,6 +378,8 @@ jobs:
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          # FRED API secrets
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: |
           # Create namespace if it doesn't exist
           kubectl create namespace $KUBERNETES_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
@@ -388,6 +390,12 @@ jobs:
             --from-literal=db-name="$DB_NAME" \
             --from-literal=db-user="$DB_USER" \
             --from-literal=db-password="$DB_PASSWORD" \
+            --namespace=$KUBERNETES_NAMESPACE \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # Create FRED API secret
+          kubectl create secret generic fred-api-secret \
+            --from-literal=api-key="$FRED_API_KEY" \
             --namespace=$KUBERNETES_NAMESPACE \
             --dry-run=client -o yaml | kubectl apply -f -
 
