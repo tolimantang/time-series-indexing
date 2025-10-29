@@ -143,8 +143,10 @@ class ChromaManager:
             # Try to get existing collection
             collection = self.client.get_collection(name)
             logger.info(f"Retrieved existing collection: {name}")
-        except ValueError:
-            # Create new collection
+        except Exception as e:
+            # Create new collection if it doesn't exist
+            # ChromaDB Cloud may throw different exceptions than local/hosted
+            logger.info(f"Collection {name} doesn't exist, creating new one. Error: {e}")
             collection_metadata = metadata or {}
             if description:
                 collection_metadata["description"] = description
