@@ -26,43 +26,31 @@ class FredEventEncoder(BaseEventEncoder):
     suitable for semantic search and correlation analysis.
     """
 
-    # Key FRED series for financial events
+    # Key FRED series for financial events - focused on high-impact, low-noise indicators
     KEY_SERIES = {
-        # Federal Funds Rate and Monetary Policy
+        # Federal Funds Rate and Monetary Policy (MOST IMPORTANT)
         'FEDFUNDS': {
             'name': 'Federal Funds Rate',
             'event_type': 'fed_decision',
             'importance': 'high',
             'description': 'Federal Open Market Committee target rate'
         },
-        'DFF': {
-            'name': 'Daily Federal Funds Rate',
-            'event_type': 'fed_decision',
-            'importance': 'high',
-            'description': 'Effective federal funds rate (daily)'
-        },
 
-        # Employment Data
+        # Employment Data (MAJOR MARKET MOVERS)
         'UNRATE': {
             'name': 'Unemployment Rate',
             'event_type': 'employment_data',
             'importance': 'high',
             'description': 'Civilian unemployment rate'
         },
-        'NONFARM': {
-            'name': 'Nonfarm Payrolls',
-            'event_type': 'employment_data',
-            'importance': 'high',
-            'description': 'All employees, total nonfarm payrolls'
-        },
         'PAYEMS': {
-            'name': 'Total Nonfarm Payrolls',
+            'name': 'Nonfarm Payrolls',
             'event_type': 'employment_data',
             'importance': 'high',
             'description': 'All employees, total nonfarm payrolls (thousands)'
         },
 
-        # Inflation Data
+        # Inflation Data (CRITICAL FOR FED DECISIONS)
         'CPIAUCSL': {
             'name': 'Consumer Price Index',
             'event_type': 'inflation_data',
@@ -76,47 +64,29 @@ class FredEventEncoder(BaseEventEncoder):
             'description': 'Consumer Price Index for All Urban Consumers: All Items Less Food and Energy'
         },
 
-        # GDP and Growth
+        # GDP and Growth (QUARTERLY RELEASES)
         'GDP': {
             'name': 'Gross Domestic Product',
             'event_type': 'economic_growth',
             'importance': 'high',
             'description': 'Gross Domestic Product, seasonally adjusted annual rate'
         },
-        'GDPC1': {
-            'name': 'Real GDP',
-            'event_type': 'economic_growth',
-            'importance': 'high',
-            'description': 'Real Gross Domestic Product, chained 2012 dollars'
-        },
 
-        # Market and Financial Indicators
-        'TB3MS': {
-            'name': '3-Month Treasury Rate',
-            'event_type': 'treasury_data',
-            'importance': 'medium',
-            'description': '3-Month Treasury Constant Maturity Rate'
-        },
+        # Treasury Rates (MARKET INDICATORS)
         'DGS10': {
             'name': '10-Year Treasury Rate',
             'event_type': 'treasury_data',
             'importance': 'medium',
             'description': '10-Year Treasury Constant Maturity Rate'
-        },
-        'DEXUSEU': {
-            'name': 'USD/EUR Exchange Rate',
-            'event_type': 'currency_data',
-            'importance': 'medium',
-            'description': 'U.S. / Euro Foreign Exchange Rate'
-        },
-
-        # Economic Uncertainty
-        'USEPUINDXD': {
-            'name': 'Economic Policy Uncertainty',
-            'event_type': 'policy_uncertainty',
-            'importance': 'medium',
-            'description': 'Economic Policy Uncertainty Index for United States'
         }
+
+        # Removed noisy series:
+        # - DFF (daily fed funds - too noisy, FEDFUNDS is enough)
+        # - NONFARM (incorrect series ID)
+        # - GDPC1 (duplicate of GDP)
+        # - TB3MS (3-month less important than 10-year)
+        # - DEXUSEU (currency too volatile for daily events)
+        # - USEPUINDXD (extremely noisy, even with 20% threshold)
     }
 
     def __init__(self, api_key: Optional[str] = None, **config):
