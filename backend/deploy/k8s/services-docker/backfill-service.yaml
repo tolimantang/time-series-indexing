@@ -57,6 +57,11 @@ spec:
           value: "backfill-service"
         - name: PYTHONPATH
           value: "/app/src"
+        - name: FRED_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: fred-api-secret
+              key: api-key
 
         # Health checks
         livenessProbe:
