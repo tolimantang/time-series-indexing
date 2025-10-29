@@ -22,81 +22,81 @@ spec:
         deployment-type: docker
     spec:
       containers:
-      - name: backfill-service
-        image: your-account-id.dkr.ecr.us-west-1.amazonaws.com/astrofinancial-backfill-service:latest
-        imagePullPolicy: Always
-        ports:
-        - containerPort: 8001
-          name: http
-          protocol: TCP
+        - name: backfill-service
+          image: your-account-id.dkr.ecr.us-west-1.amazonaws.com/astrofinancial-backfill-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8001
+              name: http
+              protocol: TCP
 
-        env:
-        - name: DB_HOST
-          valueFrom:
-            secretKeyRef:
-              name: market-encoder-secrets
-              key: db-host
-        - name: DB_USER
-          valueFrom:
-            secretKeyRef:
-              name: market-encoder-secrets
-              key: db-user
-        - name: DB_NAME
-          valueFrom:
-            secretKeyRef:
-              name: market-encoder-secrets
-              key: db-name
-        - name: DB_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: market-encoder-secrets
-              key: db-password
-        - name: DB_PORT
-          value: "5432"
-        - name: SERVICE_NAME
-          value: "backfill-service"
-        - name: PYTHONPATH
-          value: "/app/src"
-        - name: FRED_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: fred-api-secret
-              key: api-key
+          env:
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-host
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-user
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-name
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-password
+            - name: DB_PORT
+              value: "5432"
+            - name: SERVICE_NAME
+              value: "backfill-service"
+            - name: PYTHONPATH
+              value: "/app/src"
+            - name: FRED_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: fred-api-secret
+                  key: api-key
 
-        # Health checks
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8001
-          initialDelaySeconds: 30
-          periodSeconds: 30
-          timeoutSeconds: 10
-          failureThreshold: 3
+          # Health checks
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
 
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 8001
-          initialDelaySeconds: 15
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
 
-        # Resource limits
-        resources:
-          requests:
-            memory: "512Mi"
-            cpu: "250m"
-          limits:
-            memory: "2Gi"
-            cpu: "1000m"
+          # Resource limits
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
 
-        # Security context
-        securityContext:
-          runAsNonRoot: true
-          runAsUser: 1000
-          readOnlyRootFilesystem: false
-          allowPrivilegeEscalation: false
+          # Security context
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
 
       restartPolicy: Always
 
@@ -113,9 +113,9 @@ metadata:
 spec:
   type: ClusterIP
   ports:
-  - port: 8001
-    targetPort: 8001
-    protocol: TCP
-    name: http
+    - port: 8001
+      targetPort: 8001
+      protocol: TCP
+      name: http
   selector:
     app: backfill-service
