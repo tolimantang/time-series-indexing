@@ -185,7 +185,16 @@ class ChromaManager:
 
                 ids = [event['id'] for event in batch]
                 documents = [event['document'] for event in batch]
-                metadatas = [event['metadata'] for event in batch]
+                # Ensure metadata is not empty - ChromaDB Cloud requires non-empty metadata
+                metadatas = []
+                for event in batch:
+                    metadata = event['metadata'] or {}
+                    # Ensure at least one field is present
+                    if not metadata:
+                        metadata = {'source': 'unknown'}
+                    # Remove None values that might cause issues
+                    metadata = {k: v for k, v in metadata.items() if v is not None and v != ''}
+                    metadatas.append(metadata)
 
                 # Generate embeddings
                 embeddings = self.embedding_model.encode(documents).tolist()
@@ -231,7 +240,16 @@ class ChromaManager:
 
                 ids = [event['id'] for event in batch]
                 documents = [event['document'] for event in batch]
-                metadatas = [event['metadata'] for event in batch]
+                # Ensure metadata is not empty - ChromaDB Cloud requires non-empty metadata
+                metadatas = []
+                for event in batch:
+                    metadata = event['metadata'] or {}
+                    # Ensure at least one field is present
+                    if not metadata:
+                        metadata = {'source': 'unknown'}
+                    # Remove None values that might cause issues
+                    metadata = {k: v for k, v in metadata.items() if v is not None and v != ''}
+                    metadatas.append(metadata)
 
                 # Generate embeddings
                 embeddings = self.embedding_model.encode(documents).tolist()
