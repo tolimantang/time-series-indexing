@@ -151,6 +151,10 @@ class ChromaManager:
             if description:
                 collection_metadata["description"] = description
 
+            # Ensure collection metadata is not empty for ChromaDB Cloud
+            if not collection_metadata:
+                collection_metadata = {"created_by": "time-series-indexing", "type": "financial_events"}
+
             collection = self.client.create_collection(
                 name=name,
                 metadata=collection_metadata
