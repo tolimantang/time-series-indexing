@@ -593,36 +593,62 @@ async def backfill_news_data(request_id: str, request: BackfillRequest) -> int:
             logger.warning(f"No events found for {request.start_date} to {request.end_date}")
             return 0
 
-        # Store events
-        if CHROMA_AVAILABLE:
-            active_requests[request_id]["message"] = f"Processing {len(events)} events for ChromaDB..."
+        # Store events in dual storage (PostgreSQL + ChromaDB)
+        active_requests[request_id]["message"] = f"Storing {len(events)} events in dual storage..."
 
-            # Initialize ChromaDB manager
-            chroma_manager = create_chroma_manager()
+        # Track storage success
+        postgres_success = False
+        chroma_success = False
 
-            # Convert to ChromaDB format
-            chroma_docs = []
-            for event in events:
-                chroma_docs.append(event.to_chroma_document())
+        # 1. Store in PostgreSQL first (structured queries)
+        try:
+            from .events_postgres_manager import create_events_postgres_manager
+            postgres_manager = create_events_postgres_manager()
+            postgres_success = postgres_manager.store_events(events)
 
-            # Store in ChromaDB
-            collection_name = "financial_events"
-            success = chroma_manager.add_events(collection_name, chroma_docs)
-
-            if success:
-                logger.info(f"✅ Successfully stored {len(events)} events in ChromaDB")
-                return len(events)
+            if postgres_success:
+                logger.info(f"✅ Successfully stored {len(events)} events in PostgreSQL")
             else:
-                raise ValueError("Failed to store events in ChromaDB")
+                logger.error(f"❌ Failed to store events in PostgreSQL")
+        except Exception as e:
+            logger.error(f"❌ PostgreSQL storage error: {e}")
+
+        # 2. Store in ChromaDB (semantic search)
+        if CHROMA_AVAILABLE:
+            try:
+                # Initialize ChromaDB manager
+                chroma_manager = create_chroma_manager()
+
+                # Convert to ChromaDB format
+                chroma_docs = []
+                for event in events:
+                    chroma_docs.append(event.to_chroma_document())
+
+                # Store in ChromaDB
+                collection_name = "financial_events"
+                chroma_success = chroma_manager.add_events(collection_name, chroma_docs)
+
+                if chroma_success:
+                    logger.info(f"✅ Successfully stored {len(events)} events in ChromaDB")
+                else:
+                    logger.error(f"❌ Failed to store events in ChromaDB")
+            except Exception as e:
+                logger.error(f"❌ ChromaDB storage error: {e}")
         else:
-            # Fallback: just log events without storing
-            active_requests[request_id]["message"] = f"ChromaDB not available - logging {len(events)} events..."
+            logger.warning("ChromaDB not available - skipping semantic storage")
 
-            for event in events:
-                logger.info(f"Event: {event.date.strftime('%Y-%m-%d')} - {event.title}")
+        # Determine overall success
+        if postgres_success or chroma_success:
+            storage_info = []
+            if postgres_success:
+                storage_info.append("PostgreSQL")
+            if chroma_success:
+                storage_info.append("ChromaDB")
 
-            logger.info(f"✅ Processed {len(events)} events (ChromaDB not available)")
+            logger.info(f"✅ Successfully stored events in: {', '.join(storage_info)}")
             return len(events)
+        else:
+            raise ValueError("Failed to store events in both PostgreSQL and ChromaDB")
 
     except Exception as e:
         logger.error(f"❌ Events backfill failed: {e}", exc_info=True)
