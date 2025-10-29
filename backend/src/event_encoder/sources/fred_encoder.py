@@ -298,8 +298,8 @@ class FredEventEncoder(BaseEventEncoder):
                 significant_events.append((row['date'], row['value'], description))
 
         elif series_info['event_type'] == 'inflation_data':
-            # CPI changes (0.1% threshold)
-            threshold = 2.0  # 2% annual change threshold
+            # CPI changes (monthly 0.3% or more - indicates significant inflation moves)
+            threshold = 0.3  # Monthly threshold
             significant_rows = df[df['pct_change'].abs() >= threshold]
 
             for _, row in significant_rows.iterrows():
@@ -309,9 +309,45 @@ class FredEventEncoder(BaseEventEncoder):
 
                 significant_events.append((row['date'], row['value'], description))
 
+        elif series_info['event_type'] == 'economic_growth':
+            # GDP changes (1% quarterly change or more)
+            threshold = 1.0
+            significant_rows = df[df['pct_change'].abs() >= threshold]
+
+            for _, row in significant_rows.iterrows():
+                pct_change = row['pct_change']
+                direction = "grows" if pct_change > 0 else "contracts"
+                description = f"GDP {direction} {abs(pct_change):.1f}% to ${row['value']:,.0f}B"
+
+                significant_events.append((row['date'], row['value'], description))
+
+        elif series_info['event_type'] == 'treasury_data':
+            # Treasury rate changes (0.25% or more - significant yield moves)
+            threshold = 0.25
+            significant_rows = df[df['change'].abs() >= threshold]
+
+            for _, row in significant_rows.iterrows():
+                change = row['change']
+                direction = "rises" if change > 0 else "falls"
+                description = f"{series_info['name']} {direction} {abs(change):.2f}% to {row['value']:.2f}%"
+
+                significant_events.append((row['date'], row['value'], description))
+
+        elif series_info['event_type'] == 'policy_uncertainty':
+            # Policy uncertainty - only very large moves (20% change in a day)
+            threshold = 20.0
+            significant_rows = df[df['pct_change'].abs() >= threshold]
+
+            for _, row in significant_rows.iterrows():
+                pct_change = row['pct_change']
+                direction = "increases" if pct_change > 0 else "decreases"
+                description = f"{series_info['name']} {direction} {abs(pct_change):.1f}% to {row['value']:.2f}"
+
+                significant_events.append((row['date'], row['value'], description))
+
         else:
-            # Generic threshold (5% change)
-            threshold = 5.0
+            # Generic threshold - much higher for other series (10% change)
+            threshold = 10.0
             significant_rows = df[df['pct_change'].abs() >= threshold]
 
             for _, row in significant_rows.iterrows():
