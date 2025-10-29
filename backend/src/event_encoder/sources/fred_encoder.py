@@ -35,6 +35,12 @@ class FredEventEncoder(BaseEventEncoder):
             'importance': 'high',
             'description': 'Federal Open Market Committee target rate'
         },
+        'DFEDTAR': {
+            'name': 'FOMC Target Rate',
+            'event_type': 'fed_meeting',
+            'importance': 'high',
+            'description': 'Federal Open Market Committee upper target rate - captures actual meeting decisions'
+        },
 
         # Employment Data (MAJOR MARKET MOVERS)
         'UNRATE': {
@@ -78,6 +84,22 @@ class FredEventEncoder(BaseEventEncoder):
             'event_type': 'treasury_data',
             'importance': 'medium',
             'description': '10-Year Treasury Constant Maturity Rate'
+        },
+
+        # Housing Market (ECONOMIC CYCLE INDICATOR)
+        'HOUST': {
+            'name': 'Housing Starts',
+            'event_type': 'housing_data',
+            'importance': 'medium',
+            'description': 'Housing starts - privately owned units started, thousands of units'
+        },
+
+        # Consumer Sentiment (FORWARD-LOOKING INDICATOR)
+        'UMCSENT': {
+            'name': 'Consumer Sentiment',
+            'event_type': 'sentiment_data',
+            'importance': 'medium',
+            'description': 'University of Michigan Consumer Sentiment Index'
         }
 
         # Removed noisy series:
@@ -247,6 +269,19 @@ class FredEventEncoder(BaseEventEncoder):
 
                 significant_events.append((row['date'], row['value'], description))
 
+        elif series_info['event_type'] == 'fed_meeting':
+            # FOMC target rate changes (any change is significant)
+            significant_rows = df[df['change'].abs() > 0]
+
+            for _, row in significant_rows.iterrows():
+                change = row['change']
+                if change > 0:
+                    description = f"FOMC raises target rate by {change:.2f} percentage points to {row['value']:.2f}%"
+                else:
+                    description = f"FOMC cuts target rate by {abs(change):.2f} percentage points to {row['value']:.2f}%"
+
+                significant_events.append((row['date'], row['value'], description))
+
         elif series_info['event_type'] == 'employment_data':
             # Employment changes (0.1% unemployment rate or 50k jobs)
             if 'unemployment' in series_info['name'].lower():
@@ -300,6 +335,30 @@ class FredEventEncoder(BaseEventEncoder):
                 change = row['change']
                 direction = "rises" if change > 0 else "falls"
                 description = f"{series_info['name']} {direction} {abs(change):.2f}% to {row['value']:.2f}%"
+
+                significant_events.append((row['date'], row['value'], description))
+
+        elif series_info['event_type'] == 'housing_data':
+            # Housing starts - 10% change (significant for housing cycle)
+            threshold = 10.0
+            significant_rows = df[df['pct_change'].abs() >= threshold]
+
+            for _, row in significant_rows.iterrows():
+                pct_change = row['pct_change']
+                direction = "surge" if pct_change > 0 else "decline"
+                description = f"Housing starts {direction} {abs(pct_change):.1f}% to {row['value']:,.0f}k units"
+
+                significant_events.append((row['date'], row['value'], description))
+
+        elif series_info['event_type'] == 'sentiment_data':
+            # Consumer sentiment - 5 point change (significant for sentiment)
+            threshold = 5.0
+            significant_rows = df[df['change'].abs() >= threshold]
+
+            for _, row in significant_rows.iterrows():
+                change = row['change']
+                direction = "improves" if change > 0 else "deteriorates"
+                description = f"Consumer sentiment {direction} by {abs(change):.1f} points to {row['value']:.1f}"
 
                 significant_events.append((row['date'], row['value'], description))
 
