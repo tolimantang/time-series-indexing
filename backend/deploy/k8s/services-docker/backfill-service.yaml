@@ -62,6 +62,27 @@ spec:
                 secretKeyRef:
                   name: fred-api-secret
                   key: api-key
+            # ChromaDB Cloud configuration
+            - name: CHROMA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: chromadb-secret
+                  key: api-key
+            - name: CHROMA_TENANT
+              valueFrom:
+                secretKeyRef:
+                  name: chromadb-secret
+                  key: tenant
+            - name: CHROMA_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: chromadb-secret
+                  key: database
+            - name: CHROMA_CONNECTION_TYPE
+              valueFrom:
+                secretKeyRef:
+                  name: chromadb-secret
+                  key: use-hosted
 
           # Health checks
           livenessProbe:

@@ -380,6 +380,10 @@ jobs:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           # FRED API secrets
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          # ChromaDB secrets
+          CHROMA_API_KEY: ${{ secrets.CHROMA_API_KEY }}
+          CHROMA_TENANT: ${{ secrets.CHROMA_TENANT }}
+          CHROMA_DATABASE: ${{ secrets.CHROMA_DATABASE }}
         run: |
           # Create namespace if it doesn't exist
           kubectl create namespace $KUBERNETES_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
@@ -396,6 +400,15 @@ jobs:
           # Create FRED API secret
           kubectl create secret generic fred-api-secret \
             --from-literal=api-key="$FRED_API_KEY" \
+            --namespace=$KUBERNETES_NAMESPACE \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # Create ChromaDB secret
+          kubectl create secret generic chromadb-secret \
+            --from-literal=api-key="$CHROMA_API_KEY" \
+            --from-literal=tenant="$CHROMA_TENANT" \
+            --from-literal=database="$CHROMA_DATABASE" \
+            --from-literal=use-hosted="cloud" \
             --namespace=$KUBERNETES_NAMESPACE \
             --dry-run=client -o yaml | kubectl apply -f -
 

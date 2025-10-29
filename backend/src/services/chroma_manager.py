@@ -10,7 +10,7 @@ import logging
 from typing import Dict, Any, List, Optional
 import chromadb
 from chromadb.config import Settings
-from chromadb.api.types import Collection
+from chromadb import Collection
 from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
@@ -27,16 +27,20 @@ class ChromaManager:
                  host: Optional[str] = None,
                  port: Optional[int] = None,
                  api_key: Optional[str] = None,
+                 tenant: Optional[str] = None,
+                 database: Optional[str] = None,
                  local_path: Optional[str] = None,
                  embedding_model: str = "all-MiniLM-L6-v2"):
         """
         Initialize ChromaDB manager.
 
         Args:
-            connection_type: "local" or "hosted"
+            connection_type: "local", "hosted", or "cloud"
             host: ChromaDB host (for hosted)
             port: ChromaDB port (for hosted)
-            api_key: API key (for hosted)
+            api_key: API key (for hosted/cloud)
+            tenant: Tenant ID (for cloud)
+            database: Database name (for cloud)
             local_path: Local storage path (for local)
             embedding_model: Sentence transformer model name
         """
@@ -51,6 +55,10 @@ class ChromaManager:
             if not all([host, port, api_key]):
                 raise ValueError("Host, port, and API key required for hosted connection")
             self.client = self._create_hosted_client(host, port, api_key)  # type: ignore
+        elif connection_type == "cloud":
+            if not all([api_key, tenant, database]):
+                raise ValueError("API key, tenant, and database required for cloud connection")
+            self.client = self._create_cloud_client(api_key, tenant, database)  # type: ignore
         else:
             self.client = self._create_local_client(local_path)
 
@@ -78,6 +86,20 @@ class ChromaManager:
         )
 
         logger.info(f"Connected to hosted ChromaDB at {host}:{port}")
+        return client
+
+    def _create_cloud_client(self, api_key: str, tenant: str, database: str):
+        """Create ChromaDB Cloud client."""
+        if not all([api_key, tenant, database]):
+            raise ValueError("API key, tenant, and database required for cloud connection")
+
+        client = chromadb.CloudClient(
+            api_key=api_key,
+            tenant=tenant,
+            database=database
+        )
+
+        logger.info(f"Connected to ChromaDB Cloud - tenant: {tenant}, database: {database}")
         return client
 
     def _create_local_client(self, local_path: Optional[str]):
@@ -378,10 +400,12 @@ def create_chroma_manager() -> ChromaManager:
     Factory function to create ChromaManager based on environment variables.
 
     Environment Variables:
-        CHROMA_CONNECTION_TYPE: "local" or "hosted" (default: "local")
+        CHROMA_CONNECTION_TYPE: "local", "hosted", or "cloud" (default: "local")
         CHROMA_HOST: Host for hosted connection
         CHROMA_PORT: Port for hosted connection
-        CHROMA_API_KEY: API key for hosted connection
+        CHROMA_API_KEY: API key for hosted/cloud connection
+        CHROMA_TENANT: Tenant ID for cloud connection
+        CHROMA_DATABASE: Database name for cloud connection
         CHROMA_PATH: Local path for persistent storage
         CHROMA_EMBEDDING_MODEL: Embedding model name (default: "all-MiniLM-L6-v2")
 
@@ -396,6 +420,14 @@ def create_chroma_manager() -> ChromaManager:
             host=os.getenv('CHROMA_HOST'),
             port=int(os.getenv('CHROMA_PORT', '8000')),
             api_key=os.getenv('CHROMA_API_KEY'),
+            embedding_model=os.getenv('CHROMA_EMBEDDING_MODEL', 'all-MiniLM-L6-v2')
+        )
+    elif connection_type == 'cloud':
+        return ChromaManager(
+            connection_type='cloud',
+            api_key=os.getenv('CHROMA_API_KEY'),
+            tenant=os.getenv('CHROMA_TENANT'),
+            database=os.getenv('CHROMA_DATABASE'),
             embedding_model=os.getenv('CHROMA_EMBEDDING_MODEL', 'all-MiniLM-L6-v2')
         )
     else:
