@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
         - name: backfill-service
-          image: your-account-id.dkr.ecr.us-west-1.amazonaws.com/astrofinancial-backfill-service:latest
+          image: 928440193005.dkr.ecr.us-west-1.amazonaws.com/astrofinancial-backfill-service:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8001
