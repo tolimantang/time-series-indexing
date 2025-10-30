@@ -13,10 +13,12 @@ import json
 try:
     from ...services.events_postgres_manager import create_events_postgres_manager
     from ...services.chroma_manager import create_chroma_manager
+    from ...services.market_data_manager import create_market_data_manager
 except ImportError:
     # Handle direct script execution
     from services.events_postgres_manager import create_events_postgres_manager
     from services.chroma_manager import create_chroma_manager
+    from services.market_data_manager import create_market_data_manager
 
 logger = logging.getLogger(__name__)
 
@@ -36,69 +38,121 @@ class FinancialQueryEngine:
         """Initialize the query engine with both storage systems."""
         self.postgres_manager = create_events_postgres_manager()
         self.chroma_manager = create_chroma_manager()
+        self.market_data_manager = create_market_data_manager()
 
-        logger.info("FinancialQueryEngine initialized with dual storage")
+        logger.info("FinancialQueryEngine initialized with dual storage + market data")
 
     def analyze_causal_impact(self,
                             trigger_event_type: str,
                             trigger_conditions: Dict[str, Any],
                             impact_timeframe_days: int = 30,
-                            limit: int = 20) -> Dict[str, Any]:
+                            limit: int = 20,
+                            target_asset: Optional[str] = None,
+                            time_range: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """
         Analyze what happens after specific types of events.
 
-        Example: What happens after Fed rate increases?
+        Example: What happens to gold prices after Fed rate increases?
 
         Args:
             trigger_event_type: Type of triggering event (e.g., 'fed_decision')
             trigger_conditions: Conditions for the trigger (e.g., {'change_direction': 'increase'})
-            impact_timeframe_days: Days to look ahead for impacts
+            impact_timeframe_days: Days to look ahead for impacts (ignored if time_range specified)
             limit: Maximum number of trigger events to analyze
+            target_asset: Optional asset symbol for price impact analysis (e.g., 'GLD', 'SPY')
+            time_range: Optional specific date range to analyze {"start_date": "2020-01-01", "end_date": "2024-12-31"}
 
         Returns:
-            Analysis results with trigger events and subsequent impacts
+            Analysis results with trigger events and market price movements.
+            If target_asset provided, returns actual price data for charting + summary statistics.
         """
         try:
-            logger.info(f"Analyzing causal impact: {trigger_event_type} -> impact in {impact_timeframe_days} days")
+            logger.info(f"Analyzing causal impact: {trigger_event_type} -> {target_asset or 'events'}")
 
-            # 1. Find trigger events from PostgreSQL
-            trigger_events = self._find_trigger_events(
-                trigger_event_type, trigger_conditions, limit
+            # 1. Determine date range for trigger event search
+            if time_range:
+                search_start = datetime.strptime(time_range['start_date'], '%Y-%m-%d').date()
+                search_end = datetime.strptime(time_range['end_date'], '%Y-%m-%d').date()
+                logger.info(f"Using specified time range: {search_start} to {search_end}")
+            else:
+                # Default: search last few years
+                search_end = date.today()
+                search_start = date(search_end.year - 5, 1, 1)
+                logger.info(f"Using default time range: {search_start} to {search_end}")
+
+            # 2. Find trigger events within the specified range
+            trigger_events = self._find_trigger_events_in_range(
+                trigger_event_type, trigger_conditions, search_start, search_end, limit
             )
 
             if not trigger_events:
                 return {
                     'trigger_type': trigger_event_type,
                     'trigger_conditions': trigger_conditions,
+                    'time_range': {'start_date': search_start.isoformat(), 'end_date': search_end.isoformat()},
                     'trigger_events_found': 0,
                     'analysis': 'No trigger events found matching criteria'
                 }
 
-            # 2. For each trigger event, find subsequent events
-            impact_analysis = []
-            for trigger in trigger_events:
-                impacts = self._find_subsequent_events(
-                    trigger['event_date'], impact_timeframe_days
-                )
+            # 3. If target_asset specified, get market data directly
+            if target_asset:
+                logger.info(f"Getting market data for {target_asset}")
 
-                impact_analysis.append({
-                    'trigger_event': trigger,
-                    'subsequent_events': impacts,
-                    'impact_count': len(impacts)
-                })
+                # For each trigger event, get market data in a simple range after the event
+                market_analysis = []
 
-            # 3. Aggregate patterns
-            patterns = self._analyze_impact_patterns(impact_analysis)
+                for trigger in trigger_events:
+                    event_date = trigger['event_date']
+                    # Get market data from event date to event_date + impact_timeframe_days
+                    market_start = event_date
+                    market_end = event_date + timedelta(days=impact_timeframe_days + 10)  # Buffer for weekends
 
-            return {
-                'trigger_type': trigger_event_type,
-                'trigger_conditions': trigger_conditions,
-                'trigger_events_found': len(trigger_events),
-                'impact_timeframe_days': impact_timeframe_days,
-                'individual_cases': impact_analysis,
-                'patterns': patterns,
-                'analysis_timestamp': datetime.now().isoformat()
-            }
+                    market_data = self.market_data_manager.get_price_data(
+                        target_asset, market_start, market_end
+                    )
+
+                    if market_data:
+                        # Calculate simple returns for this event
+                        impact = self.market_data_manager.calculate_event_impact(
+                            target_asset, event_date, forward_days=impact_timeframe_days
+                        )
+
+                        market_analysis.append({
+                            'trigger_event': trigger,
+                            'market_impact': impact,
+                            'raw_market_data': market_data[:50]  # Limit data for response size
+                        })
+
+                # Aggregate statistics across all events
+                aggregated_stats = self._aggregate_market_statistics(market_analysis)
+
+                return {
+                    'trigger_type': trigger_event_type,
+                    'trigger_conditions': trigger_conditions,
+                    'time_range': {'start_date': search_start.isoformat(), 'end_date': search_end.isoformat()},
+                    'trigger_events_found': len(trigger_events),
+                    'target_asset': target_asset,
+                    'impact_timeframe_days': impact_timeframe_days,
+                    'market_data_available': True,
+                    'individual_market_impacts': market_analysis,
+                    'aggregated_statistics': aggregated_stats,
+                    'analysis_timestamp': datetime.now().isoformat()
+                }
+            else:
+                # Traditional event-based analysis (fallback)
+                impact_analysis = self._analyze_event_based_impacts(trigger_events, impact_timeframe_days)
+                patterns = self._analyze_impact_patterns(impact_analysis)
+
+                return {
+                    'trigger_type': trigger_event_type,
+                    'trigger_conditions': trigger_conditions,
+                    'time_range': {'start_date': search_start.isoformat(), 'end_date': search_end.isoformat()},
+                    'trigger_events_found': len(trigger_events),
+                    'impact_timeframe_days': impact_timeframe_days,
+                    'individual_cases': impact_analysis,
+                    'patterns': patterns,
+                    'analysis_timestamp': datetime.now().isoformat()
+                }
 
         except Exception as e:
             logger.error(f"Error in causal impact analysis: {e}")
@@ -249,6 +303,88 @@ class FinancialQueryEngine:
             return {'error': str(e)}
 
     # Helper methods
+
+    def _find_trigger_events_in_range(self,
+                                     event_type: str,
+                                     conditions: Dict[str, Any],
+                                     start_date: date,
+                                     end_date: date,
+                                     limit: int) -> List[Dict[str, Any]]:
+        """Find events that match trigger conditions within a specific date range."""
+        # Get all events of the specified type within the date range
+        events = self.postgres_manager.get_events_by_date_range(
+            start_date, end_date, event_types=[event_type]
+        )
+
+        # Apply additional conditions
+        filtered_events = []
+        for event in events:
+            if self._event_matches_conditions(event, conditions):
+                filtered_events.append(event)
+                if len(filtered_events) >= limit:
+                    break
+
+        return filtered_events
+
+    def _aggregate_market_statistics(self, market_analysis: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Aggregate market statistics across multiple events."""
+        if not market_analysis:
+            return {}
+
+        # Extract returns for aggregation
+        returns_1d = []
+        returns_5d = []
+        returns_10d = []
+        returns_20d = []
+
+        for analysis in market_analysis:
+            market_impact = analysis.get('market_impact', {})
+            forward_returns = market_impact.get('forward_returns', {})
+
+            if 'return_1d' in forward_returns:
+                returns_1d.append(forward_returns['return_1d']['return_pct'])
+            if 'return_5d' in forward_returns:
+                returns_5d.append(forward_returns['return_5d']['return_pct'])
+            if 'return_10d' in forward_returns:
+                returns_10d.append(forward_returns['return_10d']['return_pct'])
+            if 'return_20d' in forward_returns:
+                returns_20d.append(forward_returns['return_20d']['return_pct'])
+
+        def calc_stats(returns_list):
+            if not returns_list:
+                return {}
+            return {
+                'average_return': round(sum(returns_list) / len(returns_list), 2),
+                'positive_events': len([r for r in returns_list if r > 0]),
+                'negative_events': len([r for r in returns_list if r < 0]),
+                'total_events': len(returns_list),
+                'success_rate': round(len([r for r in returns_list if r > 0]) / len(returns_list) * 100, 1)
+            }
+
+        return {
+            'return_1d': calc_stats(returns_1d),
+            'return_5d': calc_stats(returns_5d),
+            'return_10d': calc_stats(returns_10d),
+            'return_20d': calc_stats(returns_20d),
+            'total_events_with_market_data': len(market_analysis)
+        }
+
+    def _analyze_event_based_impacts(self,
+                                   trigger_events: List[Dict[str, Any]],
+                                   impact_timeframe_days: int) -> List[Dict[str, Any]]:
+        """Analyze impacts using traditional event-based approach."""
+        impact_analysis = []
+        for trigger in trigger_events:
+            impacts = self._find_subsequent_events(
+                trigger['event_date'], impact_timeframe_days
+            )
+
+            impact_analysis.append({
+                'trigger_event': trigger,
+                'subsequent_events': impacts,
+                'impact_count': len(impacts)
+            })
+        return impact_analysis
 
     def _find_trigger_events(self,
                            event_type: str,

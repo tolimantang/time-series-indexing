@@ -50,6 +50,8 @@ class CausalAnalysisRequest(BaseModel):
     trigger_conditions: Dict[str, Any] = Field(default_factory=dict, description="Conditions for the trigger")
     impact_timeframe_days: int = Field(30, description="Days to look ahead for impacts")
     limit: int = Field(20, description="Maximum number of trigger events to analyze")
+    target_asset: Optional[str] = Field(None, description="Optional asset symbol for price impact analysis (e.g., 'GLD', 'SPY')")
+    time_range: Optional[Dict[str, str]] = Field(None, description="Optional specific time range for analysis (start_date, end_date)")
 
     class Config:
         schema_extra = {
@@ -57,7 +59,9 @@ class CausalAnalysisRequest(BaseModel):
                 "trigger_event_type": "fed_decision",
                 "trigger_conditions": {"change_direction": "increase"},
                 "impact_timeframe_days": 30,
-                "limit": 10
+                "limit": 10,
+                "target_asset": "GLD",
+                "time_range": {"start_date": "2020-01-01", "end_date": "2024-12-31"}
             }
         }
 
@@ -158,7 +162,9 @@ async def causal_analysis(request: CausalAnalysisRequest):
             trigger_event_type=request.trigger_event_type,
             trigger_conditions=request.trigger_conditions,
             impact_timeframe_days=request.impact_timeframe_days,
-            limit=request.limit
+            limit=request.limit,
+            target_asset=request.target_asset,
+            time_range=request.time_range
         )
 
         if 'error' in result:
