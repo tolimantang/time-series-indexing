@@ -5,19 +5,21 @@
 -- Market Data Tables
 -- ===================
 
-CREATE TABLE market_data_intraday (
-    id SERIAL PRIMARY KEY,
-    symbol VARCHAR(50) NOT NULL,
-    datetime TIMESTAMP WITH TIME ZONE NOT NULL,
-    interval_type VARCHAR(10) NOT NULL,
-    open_price DECIMAL(12,6),
-    high_price DECIMAL(12,6),
-    low_price DECIMAL(12,6),
-    close_price DECIMAL(12,6) NOT NULL,
-    volume INTEGER,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    CONSTRAINT market_data_intraday_unique UNIQUE(symbol, datetime, interval_type)
-);
+CREATE TABLE market_data (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      symbol VARCHAR(50) NOT NULL,
+      trade_date DATE NOT NULL,
+      open_price DECIMAL(12,6),
+      high_price DECIMAL(12,6),
+      low_price DECIMAL(12,6),
+      close_price DECIMAL(12,6) NOT NULL,
+      adjusted_close DECIMAL(12,6),
+      volume BIGINT,
+      daily_return DECIMAL(8,6),
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      CONSTRAINT market_data_unique UNIQUE(symbol, trade_date)
+  );
 
 -- Astrological Data Tables
 -- ========================
