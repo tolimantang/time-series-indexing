@@ -51,7 +51,7 @@ class CausalAnalysisRequest(BaseModel):
     trigger_conditions: Dict[str, Any] = Field(default_factory=dict, description="Conditions for the trigger")
     trigger_query: Optional[str] = Field(None, description="Natural language description of trigger events (e.g., 'Fed raises interest rates')")
     impact_timeframe_days: int = Field(30, description="Days to look ahead for impacts")
-    limit: int = Field(20, description="Maximum number of trigger events to analyze")
+    limit: int = Field(3, description="Maximum number of trigger events to analyze")
     target_asset: Optional[str] = Field(None, description="Optional asset symbol for price impact analysis (e.g., 'GLD', 'SPY')")
     time_range: Optional[Dict[str, str]] = Field(None, description="Optional specific time range for analysis (start_date, end_date)")
 
