@@ -354,9 +354,14 @@ class FinancialQueryEngine:
                 logger.warning(f"Semantic search failed or returned no results for: {trigger_query}")
                 return []
 
-            # 3. Convert ChromaDB results to standardized event format
+            # 3. Convert ChromaDB results to standardized event format with similarity scores
             trigger_events = []
             results = semantic_results['results']
+
+            # Get similarity scores (distances in ChromaDB are actually dissimilarity, so convert)
+            distances = results.get('distances', [None])[0] or []
+
+            logger.info(f"Semantic search results for '{trigger_query}':")
 
             # ChromaDB results structure: results['metadatas'][0] contains list of metadata
             if results.get('metadatas') and results['metadatas'][0]:
@@ -364,14 +369,26 @@ class FinancialQueryEngine:
                     if not metadata:
                         continue
 
+                    # Calculate similarity score (1 - distance)
+                    similarity_score = 1 - distances[i] if i < len(distances) and distances[i] is not None else 0.0
+
+                    # Get document text for logging
+                    document_text = results['documents'][0][i] if results.get('documents') and len(results['documents'][0]) > i else ''
+                    document_preview = document_text[:100] + "..." if len(document_text) > 100 else document_text
+
+                    # Log each result with similarity score
+                    event_date_str = metadata.get('date', '1970-01-01')
+                    logger.info(f"  [{i+1}] Similarity: {similarity_score:.3f} | Date: {event_date_str} | {document_preview}")
+
                     # Create event from ChromaDB metadata and document
                     event = {
                         'event_id': metadata.get('event_id', f"semantic_{i}"),
-                        'event_date': datetime.strptime(metadata.get('date', '1970-01-01'), '%Y-%m-%d').date(),
-                        'title': results['documents'][0][i] if results.get('documents') and len(results['documents'][0]) > i else '',
+                        'event_date': datetime.strptime(event_date_str, '%Y-%m-%d').date(),
+                        'title': document_text,
                         'event_type': metadata.get('event_type', 'unknown'),
                         'source': metadata.get('source', 'chromadb'),
                         'importance': metadata.get('importance', 'medium'),
+                        'similarity_score': similarity_score,
                         'metadata': metadata,
                         'semantic_score': results['distances'][0][i] if results.get('distances') and len(results['distances'][0]) > i else 0.0
                     }
