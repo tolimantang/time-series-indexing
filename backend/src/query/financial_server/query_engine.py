@@ -43,8 +43,9 @@ class FinancialQueryEngine:
         logger.info("FinancialQueryEngine initialized with dual storage + market data")
 
     def analyze_causal_impact(self,
-                            trigger_event_type: str,
-                            trigger_conditions: Dict[str, Any],
+                            trigger_event_type: Optional[str] = None,
+                            trigger_conditions: Dict[str, Any] = None,
+                            trigger_query: Optional[str] = None,
                             impact_timeframe_days: int = 30,
                             limit: int = 20,
                             target_asset: Optional[str] = None,
@@ -55,8 +56,9 @@ class FinancialQueryEngine:
         Example: What happens to gold prices after Fed rate increases?
 
         Args:
-            trigger_event_type: Type of triggering event (e.g., 'fed_decision')
+            trigger_event_type: Type of triggering event (e.g., 'fed_decision') - optional if trigger_query provided
             trigger_conditions: Conditions for the trigger (e.g., {'change_direction': 'increase'})
+            trigger_query: Natural language description of trigger events (e.g., 'Fed raises interest rates')
             impact_timeframe_days: Days to look ahead for impacts (ignored if time_range specified)
             limit: Maximum number of trigger events to analyze
             target_asset: Optional asset symbol for price impact analysis (e.g., 'GLD', 'SPY')
@@ -67,7 +69,7 @@ class FinancialQueryEngine:
             If target_asset provided, returns actual price data for charting + summary statistics.
         """
         try:
-            logger.info(f"Analyzing causal impact: {trigger_event_type} -> {target_asset or 'events'}")
+            logger.info(f"Analyzing causal impact: {trigger_query or trigger_event_type} -> {target_asset or 'events'}")
 
             # 1. Determine date range for trigger event search
             if time_range:
@@ -80,15 +82,32 @@ class FinancialQueryEngine:
                 search_start = date(search_end.year - 5, 1, 1)
                 logger.info(f"Using default time range: {search_start} to {search_end}")
 
-            # 2. Find trigger events within the specified range
-            trigger_events = self._find_trigger_events_in_range(
-                trigger_event_type, trigger_conditions, search_start, search_end, limit
-            )
+            # 2. Find trigger events - support both structured and semantic queries
+            if trigger_query:
+                # Use ChromaDB semantic search to find relevant events
+                logger.info(f"Using semantic search for trigger query: '{trigger_query}'")
+                trigger_events = self._find_trigger_events_semantic(
+                    trigger_query, search_start, search_end, limit
+                )
+                trigger_source = "semantic_search"
+            elif trigger_event_type:
+                # Use PostgreSQL structured search
+                logger.info(f"Using structured search for event type: {trigger_event_type}")
+                trigger_events = self._find_trigger_events_in_range(
+                    trigger_event_type, trigger_conditions or {}, search_start, search_end, limit
+                )
+                trigger_source = "structured_search"
+            else:
+                return {
+                    'error': 'Either trigger_event_type or trigger_query must be provided'
+                }
 
             if not trigger_events:
                 return {
                     'trigger_type': trigger_event_type,
+                    'trigger_query': trigger_query,
                     'trigger_conditions': trigger_conditions,
+                    'trigger_source': trigger_source,
                     'time_range': {'start_date': search_start.isoformat(), 'end_date': search_end.isoformat()},
                     'trigger_events_found': 0,
                     'analysis': 'No trigger events found matching criteria'
@@ -303,6 +322,64 @@ class FinancialQueryEngine:
             return {'error': str(e)}
 
     # Helper methods
+
+    def _find_trigger_events_semantic(self,
+                                     trigger_query: str,
+                                     start_date: date,
+                                     end_date: date,
+                                     limit: int) -> List[Dict[str, Any]]:
+        """Find events using semantic search with date range filtering."""
+        try:
+            # 1. Create ChromaDB metadata filter for date range
+            where_filter = {
+                "$and": [
+                    {"date": {"$gte": start_date.isoformat()}},
+                    {"date": {"$lte": end_date.isoformat()}}
+                ]
+            }
+
+            # 2. Use ChromaDB semantic search with metadata filtering
+            semantic_results = self.chroma_manager.query_events(
+                "financial_events",
+                trigger_query,
+                n_results=limit,
+                where_filter=where_filter
+            )
+
+            if 'error' in semantic_results or not semantic_results.get('results'):
+                logger.warning(f"Semantic search failed or returned no results for: {trigger_query}")
+                return []
+
+            # 3. Convert ChromaDB results to standardized event format
+            trigger_events = []
+            results = semantic_results['results']
+
+            # ChromaDB results structure: results['metadatas'][0] contains list of metadata
+            if results.get('metadatas') and results['metadatas'][0]:
+                for i, metadata in enumerate(results['metadatas'][0]):
+                    if not metadata:
+                        continue
+
+                    # Create event from ChromaDB metadata and document
+                    event = {
+                        'event_id': metadata.get('event_id', f"semantic_{i}"),
+                        'event_date': datetime.strptime(metadata.get('date', '1970-01-01'), '%Y-%m-%d').date(),
+                        'title': results['documents'][0][i] if results.get('documents') and len(results['documents'][0]) > i else '',
+                        'event_type': metadata.get('event_type', 'unknown'),
+                        'source': metadata.get('source', 'chromadb'),
+                        'importance': metadata.get('importance', 'medium'),
+                        'metadata': metadata,
+                        'semantic_score': results['distances'][0][i] if results.get('distances') and len(results['distances'][0]) > i else 0.0
+                    }
+
+                    trigger_events.append(event)
+
+            logger.info(f"Semantic search found {len(trigger_events)} trigger events for '{trigger_query}' in date range {start_date} to {end_date}")
+            return trigger_events
+
+        except Exception as e:
+            logger.error(f"Error in semantic trigger event search: {e}")
+            return []
 
     def _find_trigger_events_in_range(self,
                                      event_type: str,

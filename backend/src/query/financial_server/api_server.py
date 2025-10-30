@@ -46,8 +46,10 @@ query_engine = FinancialQueryEngine()
 # Request/Response Models
 
 class CausalAnalysisRequest(BaseModel):
-    trigger_event_type: str = Field(..., description="Type of triggering event (e.g., 'fed_decision')")
+    # Support both structured and natural language queries
+    trigger_event_type: Optional[str] = Field(None, description="Type of triggering event (e.g., 'fed_decision') - optional if trigger_query provided")
     trigger_conditions: Dict[str, Any] = Field(default_factory=dict, description="Conditions for the trigger")
+    trigger_query: Optional[str] = Field(None, description="Natural language description of trigger events (e.g., 'Fed raises interest rates')")
     impact_timeframe_days: int = Field(30, description="Days to look ahead for impacts")
     limit: int = Field(20, description="Maximum number of trigger events to analyze")
     target_asset: Optional[str] = Field(None, description="Optional asset symbol for price impact analysis (e.g., 'GLD', 'SPY')")
@@ -55,14 +57,24 @@ class CausalAnalysisRequest(BaseModel):
 
     class Config:
         schema_extra = {
-            "example": {
-                "trigger_event_type": "fed_decision",
-                "trigger_conditions": {"change_direction": "increase"},
-                "impact_timeframe_days": 30,
-                "limit": 10,
-                "target_asset": "GLD",
-                "time_range": {"start_date": "2020-01-01", "end_date": "2024-12-31"}
-            }
+            "examples": [
+                {
+                    "title": "Structured Query",
+                    "value": {
+                        "trigger_event_type": "fed_decision",
+                        "trigger_conditions": {"change_direction": "increase"},
+                        "target_asset": "GLD"
+                    }
+                },
+                {
+                    "title": "Natural Language Query",
+                    "value": {
+                        "trigger_query": "Fed raises interest rates",
+                        "target_asset": "GLD",
+                        "impact_timeframe_days": 30
+                    }
+                }
+            ]
         }
 
 
@@ -161,6 +173,7 @@ async def causal_analysis(request: CausalAnalysisRequest):
         result = query_engine.analyze_causal_impact(
             trigger_event_type=request.trigger_event_type,
             trigger_conditions=request.trigger_conditions,
+            trigger_query=request.trigger_query,
             impact_timeframe_days=request.impact_timeframe_days,
             limit=request.limit,
             target_asset=request.target_asset,
