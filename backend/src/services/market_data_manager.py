@@ -142,11 +142,11 @@ class MarketDataManager:
             with self.get_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                     cursor.execute("""
-                        SELECT symbol, date, open_price, high_price, low_price,
-                               close_price, volume, adjusted_close, source
+                        SELECT symbol, trade_date as date, open_price, high_price, low_price,
+                               close_price, volume, adjusted_close, 'market_data' as source
                         FROM market_data
-                        WHERE symbol = %s AND date BETWEEN %s AND %s
-                        ORDER BY date ASC
+                        WHERE symbol = %s AND trade_date BETWEEN %s AND %s
+                        ORDER BY trade_date ASC
                     """, (symbol, start_date, end_date))
 
                     results = cursor.fetchall()
