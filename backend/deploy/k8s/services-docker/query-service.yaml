@@ -1,0 +1,144 @@
+---
+# Financial Query Service - Docker-based deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: query-service
+  namespace: time-series-indexing
+  labels:
+    app: query-service
+    version: v1
+    deployment-type: docker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: query-service
+  template:
+    metadata:
+      labels:
+        app: query-service
+        version: v1
+        deployment-type: docker
+    spec:
+      containers:
+        - name: query-service
+          image: 928440193005.dkr.ecr.us-west-1.amazonaws.com/astrofinancial-backfill-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8003
+              name: http
+              protocol: TCP
+
+          env:
+            # Database configuration
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-host
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-user
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-name
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: market-encoder-secrets
+                  key: db-password
+            - name: DB_PORT
+              value: "5432"
+
+            # ChromaDB Cloud configuration
+            - name: CHROMA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: chromadb-secret
+                  key: api-key
+            - name: CHROMA_TENANT
+              valueFrom:
+                secretKeyRef:
+                  name: chromadb-secret
+                  key: tenant
+            - name: CHROMA_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: chromadb-secret
+                  key: database
+            - name: CHROMA_CONNECTION_TYPE
+              valueFrom:
+                secretKeyRef:
+                  name: chromadb-secret
+                  key: use-hosted
+
+            # Service configuration
+            - name: SERVICE_NAME
+              value: "query-service"
+            - name: PYTHONPATH
+              value: "/app/src"
+
+          # Override the default command to run the query server
+          command: ["python", "-m", "uvicorn", "query.financial_server.api_server:app", "--host", "0.0.0.0", "--port", "8003", "--log-level", "info"]
+
+          # Health checks
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8003
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8003
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # Resource limits
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+
+          # Security context
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+
+      restartPolicy: Always
+
+---
+# Service to expose the query service
+apiVersion: v1
+kind: Service
+metadata:
+  name: query-service
+  namespace: time-series-indexing
+  labels:
+    app: query-service
+    deployment-type: docker
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8003
+      targetPort: 8003
+      protocol: TCP
+      name: http
+  selector:
+    app: query-service

@@ -63,7 +63,7 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
           # Include base image repository
-          repos=(astrofinancial-base astrofinancial-backfill-service astrofinancial-backtesting-service astrofinancial-recommendation-service)
+          repos=(astrofinancial-base astrofinancial-backfill-service astrofinancial-backtesting-service astrofinancial-recommendation-service astrofinancial-query-service)
 
           for repo_name in "${repos[@]}"; do
             # Check if repository exists, create if it doesn't
@@ -95,7 +95,7 @@ jobs:
             backend/
 
           # Build and push each backend service with cache, using ECR base image
-          services=(backfill backtesting recommendation)
+          services=(backfill backtesting recommendation query)
 
           for service in "${services[@]}"; do
             echo "🔨 Building $service-service with cache..."
@@ -110,6 +110,9 @@ jobs:
                 ;;
               recommendation)
                 SERVICE_PORT=8002
+                ;;
+              query)
+                SERVICE_PORT=8003
                 ;;
             esac
 
@@ -126,8 +129,13 @@ jobs:
             echo "# Add service-specific Python path" >> "Dockerfile.$service.tmp"
             echo "ENV PYTHONPATH=/app/src" >> "Dockerfile.$service.tmp"
             echo "" >> "Dockerfile.$service.tmp"
+            # Run the service
             echo "# Run the service" >> "Dockerfile.$service.tmp"
-            echo "CMD [\"python\", \"-m\", \"uvicorn\", \"services.${service}_service:app\", \"--host\", \"0.0.0.0\", \"--port\", \"$SERVICE_PORT\", \"--log-level\", \"info\"]" >> "Dockerfile.$service.tmp"
+            if [ "$service" = "query" ]; then
+              echo "CMD [\"python\", \"-m\", \"uvicorn\", \"query.financial_server.api_server:app\", \"--host\", \"0.0.0.0\", \"--port\", \"$SERVICE_PORT\", \"--log-level\", \"info\"]" >> "Dockerfile.$service.tmp"
+            else
+              echo "CMD [\"python\", \"-m\", \"uvicorn\", \"services.${service}_service:app\", \"--host\", \"0.0.0.0\", \"--port\", \"$SERVICE_PORT\", \"--log-level\", \"info\"]" >> "Dockerfile.$service.tmp"
+            fi
 
             # Build and push service image with cache
             docker buildx build \
@@ -416,7 +424,7 @@ jobs:
           kubectl apply -f backend/deploy/k8s/market-encoder/simple-market-encoder-cronjob.yaml
 
           # Deploy backend services with updated image tags
-          services=(backfill backtesting recommendation)
+          services=(backfill backtesting recommendation query)
 
           for service in "${services[@]}"; do
             echo "🚀 Deploying $service-service..."
