@@ -265,9 +265,11 @@ class EventsPostgresManager:
                 events = []
                 for row in results:
                     event_dict = dict(row)
-                    # Parse JSON metadata
+                    # Parse JSON metadata if it's a string, otherwise keep as-is
                     if event_dict['metadata']:
-                        event_dict['metadata'] = json.loads(event_dict['metadata'])
+                        if isinstance(event_dict['metadata'], str):
+                            event_dict['metadata'] = json.loads(event_dict['metadata'])
+                        # If it's already a dict (JSONB), keep it as-is
                     events.append(event_dict)
 
                 logger.info(f"Retrieved {len(events)} events from {start_date} to {end_date}")
