@@ -339,13 +339,6 @@ class ChromaManager:
             collection = self.get_or_create_collection(collection_name)
             count = collection.count()
 
-            # Get sample of recent data to determine date range
-            sample_results = collection.query(
-                query_texts=["recent data"],
-                n_results=min(count, 100),
-                include=['metadatas']
-            )
-
             stats = {
                 'collection_name': collection_name,
                 'total_documents': count,
@@ -353,28 +346,42 @@ class ChromaManager:
                 'embedding_model': self.embedding_model_name
             }
 
-            # Extract date range if metadata contains dates
-            if sample_results['metadatas'] and sample_results['metadatas'][0]:
-                dates = []
-                sources = set()
-                event_types = set()
+            # If there are documents, try to get metadata sample using get() instead of query()
+            if count > 0:
+                try:
+                    # Use get() with limit instead of query() to avoid embedding/distance issues
+                    sample_results = collection.get(
+                        limit=min(count, 100),
+                        include=['metadatas']
+                    )
 
-                for metadata in sample_results['metadatas'][0]:
-                    if 'date' in metadata:
-                        dates.append(metadata['date'])
-                    if 'source' in metadata:
-                        sources.add(metadata['source'])
-                    if 'event_type' in metadata:
-                        event_types.add(metadata['event_type'])
+                    # Extract date range if metadata contains dates
+                    if sample_results and sample_results.get('metadatas'):
+                        dates = []
+                        sources = set()
+                        event_types = set()
 
-                if dates:
-                    stats['date_range'] = {
-                        'earliest': min(dates),
-                        'latest': max(dates)
-                    }
+                        for metadata in sample_results['metadatas']:
+                            if metadata:  # Check if metadata is not None
+                                if 'date' in metadata:
+                                    dates.append(metadata['date'])
+                                if 'source' in metadata:
+                                    sources.add(metadata['source'])
+                                if 'event_type' in metadata:
+                                    event_types.add(metadata['event_type'])
 
-                stats['sources'] = list(sources)
-                stats['event_types'] = list(event_types)
+                        if dates:
+                            stats['date_range'] = {
+                                'earliest': min(dates),
+                                'latest': max(dates)
+                            }
+
+                        stats['sources'] = list(sources)
+                        stats['event_types'] = list(event_types)
+
+                except Exception as metadata_error:
+                    logger.warning(f"Could not extract metadata sample for {collection_name}: {metadata_error}")
+                    # Continue with basic stats even if metadata extraction fails
 
             return stats
 
@@ -382,6 +389,7 @@ class ChromaManager:
             logger.error(f"Error getting stats for {collection_name}: {e}")
             return {
                 'collection_name': collection_name,
+                'total_documents': 0,
                 'error': str(e)
             }
 
