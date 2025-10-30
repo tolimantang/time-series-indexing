@@ -330,11 +330,15 @@ class FinancialQueryEngine:
                                      limit: int) -> List[Dict[str, Any]]:
         """Find events using semantic search with date range filtering."""
         try:
-            # 1. Create ChromaDB metadata filter for date range
+            # 1. Create ChromaDB metadata filter for date range using timestamps
+            # Convert dates to timestamps for ChromaDB filtering
+            start_timestamp = datetime.combine(start_date, datetime.min.time()).timestamp()
+            end_timestamp = datetime.combine(end_date, datetime.max.time()).timestamp()
+
             where_filter = {
                 "$and": [
-                    {"date": {"$gte": start_date.isoformat()}},
-                    {"date": {"$lte": end_date.isoformat()}}
+                    {"timestamp": {"$gte": start_timestamp}},
+                    {"timestamp": {"$lte": end_timestamp}}
                 ]
             }
 
