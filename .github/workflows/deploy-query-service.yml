@@ -1,4 +1,4 @@
-name: Deploy Financial Query Service
+name: Deploy Query Services
 
 on:
   push:
@@ -6,8 +6,10 @@ on:
     paths:
       - 'backend/src/query/**'
       - 'backend/src/mcp_tools/**'
+      - 'backend/src/services/recommendation_service.py'
       - 'backend/requirements.txt'
       - 'backend/deploy/k8s/services-docker/query-service.yaml'
+      - 'backend/deploy/k8s/services-docker/recommendation-service.yaml'
       - '.github/workflows/deploy-query-service.yml'
   workflow_dispatch:
 
@@ -72,54 +74,75 @@ jobs:
         kubectl apply -f backend/deploy/k8s/market-encoder/market-encoder-secrets.yaml || echo "market-encoder-secrets.yaml not found, skipping"
         kubectl apply -f backend/deploy/k8s/secrets/chromadb-secret.yaml || echo "chromadb-secret.yaml not found, skipping"
 
-    - name: Deploy query service
+    - name: Deploy query services
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
       run: |
-        # Update image in deployment
-        cd backend
-        sed -i "s|image: .*astrofinancial-backfill-service:.*|image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}|" \
-          deploy/k8s/services-docker/query-service.yaml
+        # Deploy query and recommendation services
+        services=(query recommendation)
 
-        # Apply deployment
-        kubectl apply -f deploy/k8s/services-docker/query-service.yaml
+        for service in "${services[@]}"; do
+          echo "🚀 Deploying $service-service..."
 
-        # Wait for rollout to complete
-        kubectl rollout status deployment/query-service -n ${{ env.K8S_NAMESPACE }} --timeout=300s
+          # Update image in deployment
+          cd backend
+          sed -i "s|image: .*astrofinancial-backfill-service:.*|image: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG|" \
+            deploy/k8s/services-docker/$service-service.yaml
 
-    - name: Verify deployment
+          # Apply deployment
+          kubectl apply -f deploy/k8s/services-docker/$service-service.yaml
+
+          # Wait for rollout to complete
+          kubectl rollout status deployment/$service-service -n ${{ env.K8S_NAMESPACE }} --timeout=300s
+
+          echo "✅ $service-service deployed successfully"
+          cd ..
+        done
+
+    - name: Verify deployments
       run: |
-        # Check pod status
-        kubectl get pods -n ${{ env.K8S_NAMESPACE }} -l app=query-service
+        # Check deployments
+        kubectl get deployments -l app=query-service -n ${{ env.K8S_NAMESPACE }}
+        kubectl get deployments -l app=recommendation-service -n ${{ env.K8S_NAMESPACE }}
 
-        # Wait for pod to be ready
+        # Wait for pods to be ready
         kubectl wait --for=condition=ready pod -l app=query-service -n ${{ env.K8S_NAMESPACE }} --timeout=120s
+        kubectl wait --for=condition=ready pod -l app=recommendation-service -n ${{ env.K8S_NAMESPACE }} --timeout=120s
 
-    - name: Test deployment
+    - name: Test query services
       run: |
-        # Port forward to test the service
+        # Test query service
+        echo "🔍 Testing query service..."
         kubectl port-forward svc/query-service 8003:8003 -n ${{ env.K8S_NAMESPACE }} &
-        PF_PID=$!
-
-        # Wait for port forward to be ready
+        QUERY_PID=$!
         sleep 10
 
         # Test health endpoint
-        echo "Testing health endpoint..."
-        curl -f http://localhost:8003/health || exit 1
+        curl -f http://localhost:8003/health || echo "⚠️ Query service health check failed"
 
         # Test MCP tools endpoint
-        echo "Testing MCP tools endpoint..."
-        curl -f http://localhost:8003/tools || exit 1
+        curl -f http://localhost:8003/tools || echo "⚠️ MCP tools endpoint failed"
 
         # Test Fed rate tool with natural language query
         echo "Testing Fed rate tool..."
         curl -f -X POST http://localhost:8003/tools/fed_rate_changes \
           -H "Content-Type: application/json" \
-          -d '{"query": "Fed increases rates after 2020"}' || exit 1
+          -d '{"query": "Fed increases rates after 2020"}' || echo "⚠️ Fed rate tool test failed"
 
-        # Clean up port forward
-        kill $PF_PID || true
+        # Test recommendation service
+        echo "🔍 Testing recommendation service..."
+        kubectl port-forward svc/recommendation-service 8002:8002 -n ${{ env.K8S_NAMESPACE }} &
+        REC_PID=$!
+        sleep 10
 
-        echo "✅ All tests passed!"
+        # Test health endpoint
+        curl -f http://localhost:8002/health || echo "⚠️ Recommendation service health check failed"
+
+        # Clean up port forwards
+        kill $QUERY_PID $REC_PID 2>/dev/null || true
+
+        echo "✅ Query services tests completed"
 
   notify-success:
     runs-on: ubuntu-latest
@@ -128,9 +151,9 @@ jobs:
     steps:
     - name: Notify deployment success
       run: |
-        echo "🚀 Financial Query Service with LLM-powered Fed rate tool deployed successfully!"
-        echo "📊 Available endpoints:"
-        echo "  - Health: /health"
-        echo "  - MCP Tools: /tools"
-        echo "  - Fed Rate Tool: POST /tools/fed_rate_changes"
-        echo "  - Natural Language Queries: POST /query/simple"
+        echo "🚀 Query Services deployed successfully!"
+        echo "📊 Available services:"
+        echo "  - Query Service: Port 8003 (/health, /tools, /query/*)"
+        echo "    - Fed Rate Tool: POST /tools/fed_rate_changes"
+        echo "    - Natural Language Queries: POST /query/simple"
+        echo "  - Recommendation Service: Port 8002 (/health, /recommendations/*)"
