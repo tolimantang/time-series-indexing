@@ -169,6 +169,9 @@ Available columns in financial_events table:
 - title (TEXT)
 - description (TEXT)
 
+CRITICAL: Always use FULL 4-digit years in dates. NEVER use 2-digit years.
+Examples: "2020-01-01" (CORRECT), "20-01-01" (WRONG)
+
 Generate ONLY the WHERE clause conditions (without 'WHERE' keyword) and parameters.
 Always include: event_type = 'fed_decision'
 Use parameterized queries with %s placeholders.
@@ -184,6 +187,12 @@ Query: "Fed increases rates by more than 0.25% after 2020"
 Response: {
   "where_clause": "event_type = %s AND change_amount > %s AND event_date > %s",
   "parameters": ["fed_decision", 0.25, "2020-12-31"]
+}
+
+Query: "Fed increases rates after 2020"
+Response: {
+  "where_clause": "event_type = %s AND change_amount > %s AND event_date >= %s",
+  "parameters": ["fed_decision", 0, "2021-01-01"]
 }
 
 Query: "Large Fed rate cuts during 2008 financial crisis"
@@ -204,11 +213,35 @@ Response: {
             logger.debug(f"LLM response: {response_text}")
 
             result = json.loads(response_text)
-            return result["where_clause"], result["parameters"]
+            where_clause = result["where_clause"]
+            parameters = result["parameters"]
+
+            # Validate date parameters to prevent malformed dates
+            validated_params = []
+            for param in parameters:
+                if isinstance(param, str) and self._looks_like_date(param):
+                    if not self._is_valid_date_format(param):
+                        logger.warning(f"Invalid date format detected: {param}, using fallback")
+                        return self._fallback_where_clause(natural_language_query)
+                validated_params.append(param)
+
+            return where_clause, validated_params
 
         except Exception as e:
             logger.warning(f"LLM WHERE clause generation failed: {e}, using fallback")
             return self._fallback_where_clause(natural_language_query)
+
+    def _looks_like_date(self, value: str) -> bool:
+        """Check if a string looks like a date."""
+        import re
+        # Match patterns like YYYY-MM-DD, YY-MM-DD, etc.
+        return bool(re.match(r'^\d{2,4}-\d{1,2}-\d{1,2}$', value))
+
+    def _is_valid_date_format(self, date_str: str) -> bool:
+        """Validate that date string uses 4-digit year format."""
+        import re
+        # Must be YYYY-MM-DD format (4-digit year)
+        return bool(re.match(r'^\d{4}-\d{2}-\d{2}$', date_str))
 
     def _fallback_where_clause(self, query: str) -> tuple[str, List[Any]]:
         """Simple fallback WHERE clause generation."""
