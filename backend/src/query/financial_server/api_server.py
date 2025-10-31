@@ -328,6 +328,45 @@ async def simple_query(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# MCP Tool endpoints
+
+@app.get("/tools")
+async def list_mcp_tools():
+    """List all available MCP tools and their schemas."""
+    try:
+        tools = query_engine.get_available_mcp_tools()
+        return {
+            "available_tools": tools,
+            "tool_count": len(tools),
+            "usage": "Use POST /tools/{tool_name} to execute a tool"
+        }
+    except Exception as e:
+        logger.error(f"Error listing MCP tools: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/tools/{tool_name}")
+async def execute_mcp_tool(tool_name: str, parameters: Dict[str, Any]):
+    """
+    Execute an MCP tool with the provided parameters.
+
+    This endpoint allows the LLM to call specific tools for precise queries.
+    """
+    try:
+        logger.info(f"MCP tool request: {tool_name} with parameters: {parameters}")
+
+        result = query_engine.execute_mcp_tool(tool_name, **parameters)
+
+        if not result.get('success', False):
+            raise HTTPException(status_code=400, detail=result.get('error', 'Tool execution failed'))
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error executing MCP tool {tool_name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Development endpoints
 
 @app.get("/data/statistics")

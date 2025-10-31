@@ -1,0 +1,1 @@
+# Base MCP tool infrastructure

@@ -14,11 +14,15 @@ try:
     from ...services.events_postgres_manager import create_events_postgres_manager
     from ...services.chroma_manager import create_chroma_manager
     from ...services.market_data_manager import create_market_data_manager
+    from ...mcp_tools.base.tool_base import tool_registry
+    from ...mcp_tools.financial.fed_rate_tools import FedRateChangesTool
 except ImportError:
     # Handle direct script execution
     from services.events_postgres_manager import create_events_postgres_manager
     from services.chroma_manager import create_chroma_manager
     from services.market_data_manager import create_market_data_manager
+    from mcp_tools.base.tool_base import tool_registry
+    from mcp_tools.financial.fed_rate_tools import FedRateChangesTool
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +44,10 @@ class FinancialQueryEngine:
         self.chroma_manager = create_chroma_manager()
         self.market_data_manager = create_market_data_manager()
 
-        logger.info("FinancialQueryEngine initialized with dual storage + market data")
+        # Initialize and register MCP tools
+        self._setup_mcp_tools()
+
+        logger.info("FinancialQueryEngine initialized with dual storage + market data + MCP tools")
 
     def analyze_causal_impact(self,
                             trigger_event_type: Optional[str] = None,
@@ -590,3 +597,59 @@ class FinancialQueryEngine:
         # This would require event_id matching between ChromaDB and PostgreSQL
         # For now, return semantic results as-is
         return semantic_results
+
+    def _setup_mcp_tools(self):
+        """Initialize and register MCP tools."""
+        try:
+            # Register Fed Rate Changes tool
+            fed_rate_tool = FedRateChangesTool(
+                postgres_manager=self.postgres_manager,
+                market_data_manager=self.market_data_manager
+            )
+            tool_registry.register(fed_rate_tool)
+
+            logger.info(f"Registered MCP tools: {tool_registry.list_tools()}")
+
+        except Exception as e:
+            logger.error(f"Error setting up MCP tools: {e}")
+
+    def execute_mcp_tool(self, tool_name: str, **kwargs) -> Dict[str, Any]:
+        """
+        Execute an MCP tool by name.
+
+        Args:
+            tool_name: Name of the tool to execute
+            **kwargs: Parameters for the tool
+
+        Returns:
+            Tool execution results
+        """
+        try:
+            tool = tool_registry.get_tool(tool_name)
+            if not tool:
+                available_tools = tool_registry.list_tools()
+                return {
+                    'success': False,
+                    'error': f"Tool '{tool_name}' not found. Available tools: {available_tools}"
+                }
+
+            logger.info(f"Executing MCP tool: {tool_name} with params: {kwargs}")
+            result = tool.execute(**kwargs)
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error executing MCP tool {tool_name}: {e}")
+            return {
+                'success': False,
+                'error': f"Tool execution failed: {str(e)}"
+            }
+
+    def get_available_mcp_tools(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get schemas for all available MCP tools.
+
+        Returns:
+            Dictionary mapping tool names to their schemas
+        """
+        return tool_registry.get_all_schemas()
