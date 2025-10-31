@@ -1,0 +1,51 @@
+name: Test Fed Rate Tool
+
+on:
+  pull_request:
+    paths:
+      - 'backend/src/mcp_tools/**'
+      - 'backend/src/query/**'
+      - 'backend/requirements.txt'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        cd backend
+        pip install -r requirements.txt
+
+    - name: Run Fed Rate Tool unit tests
+      env:
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      run: |
+        cd backend
+        python test_fed_rate_tool.py
+
+    - name: Test import and basic functionality
+      run: |
+        cd backend
+        python -c "
+        import sys
+        sys.path.append('src')
+        from src.mcp_tools.financial.fed_rate_tools import FedRateChangesTool
+        print('✅ FedRateChangesTool imports successfully')
+
+        # Test schema
+        tool = FedRateChangesTool(None, None, None)
+        schema = tool.get_schema()
+        assert 'query' in schema['properties']
+        print('✅ Tool schema is valid')
+        print('✅ All basic tests passed!')
+        "

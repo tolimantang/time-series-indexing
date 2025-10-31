@@ -604,7 +604,8 @@ class FinancialQueryEngine:
             # Register Fed Rate Changes tool
             fed_rate_tool = FedRateChangesTool(
                 postgres_manager=self.postgres_manager,
-                market_data_manager=self.market_data_manager
+                market_data_manager=self.market_data_manager,
+                anthropic_api_key=None  # Will use ANTHROPIC_API_KEY env var
             )
             tool_registry.register(fed_rate_tool)
 

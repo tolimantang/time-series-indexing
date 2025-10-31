@@ -1,0 +1,136 @@
+name: Deploy Financial Query Service
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/src/query/**'
+      - 'backend/src/mcp_tools/**'
+      - 'backend/requirements.txt'
+      - 'backend/deploy/k8s/services-docker/query-service.yaml'
+      - '.github/workflows/deploy-query-service.yml'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-west-1
+  ECR_REPOSITORY: astrofinancial-backfill-service
+  K8S_NAMESPACE: time-series-indexing
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build, tag, and push image to Amazon ECR
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        cd backend
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Configure kubeconfig
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name financial-analysis-cluster
+
+    - name: Create/Update Kubernetes secrets
+      env:
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      run: |
+        # Create namespace if it doesn't exist
+        kubectl create namespace ${{ env.K8S_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+        # Create/update Anthropic secret
+        kubectl create secret generic anthropic-secret \
+          --from-literal=api-key="${ANTHROPIC_API_KEY}" \
+          --namespace=${{ env.K8S_NAMESPACE }} \
+          --dry-run=client -o yaml | kubectl apply -f -
+
+        # Apply other required secrets (assuming they exist)
+        kubectl apply -f backend/deploy/k8s/market-encoder/market-encoder-secrets.yaml || echo "market-encoder-secrets.yaml not found, skipping"
+        kubectl apply -f backend/deploy/k8s/secrets/chromadb-secret.yaml || echo "chromadb-secret.yaml not found, skipping"
+
+    - name: Deploy query service
+      run: |
+        # Update image in deployment
+        cd backend
+        sed -i "s|image: .*astrofinancial-backfill-service:.*|image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}|" \
+          deploy/k8s/services-docker/query-service.yaml
+
+        # Apply deployment
+        kubectl apply -f deploy/k8s/services-docker/query-service.yaml
+
+        # Wait for rollout to complete
+        kubectl rollout status deployment/query-service -n ${{ env.K8S_NAMESPACE }} --timeout=300s
+
+    - name: Verify deployment
+      run: |
+        # Check pod status
+        kubectl get pods -n ${{ env.K8S_NAMESPACE }} -l app=query-service
+
+        # Wait for pod to be ready
+        kubectl wait --for=condition=ready pod -l app=query-service -n ${{ env.K8S_NAMESPACE }} --timeout=120s
+
+    - name: Test deployment
+      run: |
+        # Port forward to test the service
+        kubectl port-forward svc/query-service 8003:8003 -n ${{ env.K8S_NAMESPACE }} &
+        PF_PID=$!
+
+        # Wait for port forward to be ready
+        sleep 10
+
+        # Test health endpoint
+        echo "Testing health endpoint..."
+        curl -f http://localhost:8003/health || exit 1
+
+        # Test MCP tools endpoint
+        echo "Testing MCP tools endpoint..."
+        curl -f http://localhost:8003/tools || exit 1
+
+        # Test Fed rate tool with natural language query
+        echo "Testing Fed rate tool..."
+        curl -f -X POST http://localhost:8003/tools/fed_rate_changes \
+          -H "Content-Type: application/json" \
+          -d '{"query": "Fed increases rates after 2020"}' || exit 1
+
+        # Clean up port forward
+        kill $PF_PID || true
+
+        echo "✅ All tests passed!"
+
+  notify-success:
+    runs-on: ubuntu-latest
+    needs: build-and-deploy
+    if: success()
+    steps:
+    - name: Notify deployment success
+      run: |
+        echo "🚀 Financial Query Service with LLM-powered Fed rate tool deployed successfully!"
+        echo "📊 Available endpoints:"
+        echo "  - Health: /health"
+        echo "  - MCP Tools: /tools"
+        echo "  - Fed Rate Tool: POST /tools/fed_rate_changes"
+        echo "  - Natural Language Queries: POST /query/simple"

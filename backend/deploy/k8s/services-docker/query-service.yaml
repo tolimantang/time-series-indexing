@@ -77,6 +77,13 @@ spec:
                   name: chromadb-secret
                   key: use-hosted
 
+            # Anthropic API configuration for LLM-powered WHERE clause generation
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: anthropic-secret
+                  key: api-key
+
             # Service configuration
             - name: SERVICE_NAME
               value: "query-service"
