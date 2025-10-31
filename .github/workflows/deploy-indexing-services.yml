@@ -4,10 +4,15 @@ on:
   push:
     branches: [main]
     paths:
+      # Code changes (require rebuild)
       - 'backend/src/services/backfill_service.py'
       - 'backend/src/services/backtesting_service.py'
+      - 'backend/src/services/*_manager.py'
       - 'backend/src/llm_analyzer/**'
       - 'backend/requirements.txt'
+      - 'backend/Dockerfile'
+      - 'backend/docker/Dockerfile.base'
+      # Config changes (deploy only)
       - 'backend/deploy/k8s/services-docker/backfill-service.yaml'
       - 'backend/deploy/k8s/services-docker/backtesting-service.yaml'
       - '.github/workflows/deploy-indexing-services.yml'
@@ -15,16 +20,19 @@ on:
 
 env:
   AWS_REGION: us-west-1
-  ECR_REPOSITORY: astrofinancial-backfill-service
   K8S_NAMESPACE: time-series-indexing
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    environment: production
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -37,16 +45,90 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build, tag, and push image to Amazon ECR
+    - name: Create ECR repositories for indexing services
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+      run: |
+        # ECR repositories for indexing services
+        repos=(astrofinancial-base astrofinancial-backfill-service astrofinancial-backtesting-service)
+
+        for repo_name in "${repos[@]}"; do
+          if ! aws ecr describe-repositories --repository-names $repo_name --region ${{ env.AWS_REGION }} 2>/dev/null; then
+            echo "Creating ECR repository: $repo_name"
+            aws ecr create-repository \
+              --repository-name $repo_name \
+              --region ${{ env.AWS_REGION }} \
+              --image-scanning-configuration scanOnPush=true
+          else
+            echo "ECR repository $repo_name already exists"
+          fi
+        done
+
+    - name: Build and push base image and indexing services
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.sha }}
       run: |
-        cd backend
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        # Build base image first with cache and push to ECR
+        echo "🔨 Building base image with cache..."
+        docker buildx build \
+          --platform linux/amd64 \
+          --cache-from type=registry,ref=$ECR_REGISTRY/astrofinancial-base:buildcache \
+          --cache-to type=registry,ref=$ECR_REGISTRY/astrofinancial-base:buildcache,mode=max \
+          -f backend/docker/Dockerfile.base \
+          -t $ECR_REGISTRY/astrofinancial-base:latest \
+          --push \
+          backend/
+
+        # Build and push indexing services using ECR base image
+        services=(backfill backtesting)
+
+        for service in "${services[@]}"; do
+          echo "🔨 Building $service-service with cache..."
+
+          # Set service-specific variables
+          case $service in
+            backfill)
+              SERVICE_PORT=8001
+              ;;
+            backtesting)
+              SERVICE_PORT=8000
+              ;;
+          esac
+
+          # Create a temporary Dockerfile that uses ECR base image
+          echo "FROM $ECR_REGISTRY/astrofinancial-base:latest" > "Dockerfile.$service.tmp"
+          echo "" >> "Dockerfile.$service.tmp"
+          echo "# Set service-specific environment variables" >> "Dockerfile.$service.tmp"
+          echo "ENV PORT=$SERVICE_PORT" >> "Dockerfile.$service.tmp"
+          echo "ENV SERVICE_NAME=$service-service" >> "Dockerfile.$service.tmp"
+          echo "" >> "Dockerfile.$service.tmp"
+          echo "# Expose port" >> "Dockerfile.$service.tmp"
+          echo "EXPOSE $SERVICE_PORT" >> "Dockerfile.$service.tmp"
+          echo "" >> "Dockerfile.$service.tmp"
+          echo "# Add service-specific Python path" >> "Dockerfile.$service.tmp"
+          echo "ENV PYTHONPATH=/app/src" >> "Dockerfile.$service.tmp"
+          echo "" >> "Dockerfile.$service.tmp"
+          # Run the service
+          echo "# Run the service" >> "Dockerfile.$service.tmp"
+          echo "CMD [\"python\", \"-m\", \"uvicorn\", \"services.${service}_service:app\", \"--host\", \"0.0.0.0\", \"--port\", \"$SERVICE_PORT\", \"--log-level\", \"info\"]" >> "Dockerfile.$service.tmp"
+
+          # Build and push service image with cache
+          docker buildx build \
+            --platform linux/amd64 \
+            --cache-from type=registry,ref=$ECR_REGISTRY/astrofinancial-$service-service:buildcache \
+            --cache-to type=registry,ref=$ECR_REGISTRY/astrofinancial-$service-service:buildcache,mode=max \
+            -f "Dockerfile.$service.tmp" \
+            -t $ECR_REGISTRY/astrofinancial-$service-service:$IMAGE_TAG \
+            -t $ECR_REGISTRY/astrofinancial-$service-service:latest \
+            --push \
+            backend/
+
+          # Clean up temporary Dockerfile
+          rm "Dockerfile.$service.tmp"
+
+          echo "✅ $service-service pushed to ECR"
+        done
 
     - name: Setup kubectl
       uses: azure/setup-kubectl@v3
@@ -71,7 +153,7 @@ jobs:
         # Create namespace if it doesn't exist
         kubectl create namespace ${{ env.K8S_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
 
-        # Create/update database secrets
+        # Create/update shared secrets needed by indexing services
         kubectl create secret generic market-encoder-secrets \
           --from-literal=db-host="$DB_HOST" \
           --from-literal=db-name="$DB_NAME" \
@@ -80,13 +162,11 @@ jobs:
           --namespace=${{ env.K8S_NAMESPACE }} \
           --dry-run=client -o yaml | kubectl apply -f -
 
-        # Create/update FRED API secret
         kubectl create secret generic fred-api-secret \
           --from-literal=api-key="$FRED_API_KEY" \
           --namespace=${{ env.K8S_NAMESPACE }} \
           --dry-run=client -o yaml | kubectl apply -f -
 
-        # Create/update ChromaDB secret
         kubectl create secret generic chromadb-secret \
           --from-literal=api-key="$CHROMA_API_KEY" \
           --from-literal=tenant="$CHROMA_TENANT" \
@@ -106,19 +186,18 @@ jobs:
         for service in "${services[@]}"; do
           echo "🚀 Deploying $service-service..."
 
-          # Update image in deployment
-          cd backend
-          sed -i "s|image: .*astrofinancial-backfill-service:.*|image: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG|" \
-            deploy/k8s/services-docker/$service-service.yaml
+          # Apply the Docker-based K8s deployments
+          kubectl apply -f backend/deploy/k8s/services-docker/$service-service.yaml
 
-          # Apply deployment
-          kubectl apply -f deploy/k8s/services-docker/$service-service.yaml
+          # Update deployment image to use the specific commit SHA
+          kubectl set image deployment/$service-service \
+            $service-service=$ECR_REGISTRY/astrofinancial-$service-service:$IMAGE_TAG \
+            -n ${{ env.K8S_NAMESPACE }}
 
           # Wait for rollout to complete
           kubectl rollout status deployment/$service-service -n ${{ env.K8S_NAMESPACE }} --timeout=300s
 
           echo "✅ $service-service deployed successfully"
-          cd ..
         done
 
     - name: Verify deployments
@@ -137,7 +216,7 @@ jobs:
         echo "🔍 Testing backfill service..."
         kubectl port-forward svc/backfill-service 8001:8001 -n ${{ env.K8S_NAMESPACE }} &
         BACKFILL_PID=$!
-        sleep 10
+        sleep 15
 
         # Test health endpoint
         curl -f http://localhost:8001/health || echo "⚠️ Backfill service health check failed"
@@ -167,3 +246,4 @@ jobs:
         echo "📊 Available services:"
         echo "  - Backfill Service: Port 8001 (/health, /backfill/*)"
         echo "  - Backtesting Service: Port 8000 (/health, /backtest/*)"
+        echo "  - Images: astrofinancial-backfill-service:${{ github.sha }}, astrofinancial-backtesting-service:${{ github.sha }}"
