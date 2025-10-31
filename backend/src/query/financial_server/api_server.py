@@ -3,6 +3,8 @@ Financial Query API Server
 
 FastAPI server that provides intelligent querying capabilities for financial data.
 Handles complex questions like "What happens to platinum prices after Fed raises interest rates?"
+
+Updated with LLM-powered Fed rate tool using Anthropic API.
 """
 
 import logging
