@@ -206,9 +206,9 @@ jobs:
         kubectl get deployments -l app=backfill-service -n ${{ env.K8S_NAMESPACE }}
         kubectl get deployments -l app=backtesting-service -n ${{ env.K8S_NAMESPACE }}
 
-        # Wait for pods to be ready
-        kubectl wait --for=condition=ready pod -l app=backfill-service -n ${{ env.K8S_NAMESPACE }} --timeout=120s
-        kubectl wait --for=condition=ready pod -l app=backtesting-service -n ${{ env.K8S_NAMESPACE }} --timeout=120s
+        # Wait for pods to be ready (increased timeout for service initialization)
+        kubectl wait --for=condition=ready pod -l app=backfill-service -n ${{ env.K8S_NAMESPACE }} --timeout=300s
+        kubectl wait --for=condition=ready pod -l app=backtesting-service -n ${{ env.K8S_NAMESPACE }} --timeout=300s
 
     - name: Test indexing services
       run: |
