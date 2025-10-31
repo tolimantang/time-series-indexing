@@ -16,8 +16,12 @@ from fastapi.middleware.cors import CORSMiddleware
 try:
     from .query_engine import FinancialQueryEngine
 except ImportError:
-    # Handle direct script execution
-    from query_engine import FinancialQueryEngine
+    try:
+        # Handle direct script execution
+        from query_engine import FinancialQueryEngine
+    except ImportError:
+        # Handle container execution with PYTHONPATH=/app/src
+        from query.financial_server.query_engine import FinancialQueryEngine
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
