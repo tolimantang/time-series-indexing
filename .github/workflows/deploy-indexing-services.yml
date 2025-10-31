@@ -55,7 +55,7 @@ jobs:
 
     - name: Configure kubeconfig
       run: |
-        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name financial-analysis-cluster
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name financial-cluster
 
     - name: Create/Update Kubernetes secrets
       env:
